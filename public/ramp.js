@@ -9,6 +9,8 @@ const wheelbaseInput = document.getElementById('wheelbase');
 const boardHeightInput = document.getElementById('board-height');
 const speedInput = document.getElementById('speed');
 const animationControls = document.getElementById('animation-controls');
+const riderMassInput = document.getElementById('rider-mass');
+const frontShareInput = document.getElementById('front-share');
 const rollSpeedOut = document.getElementById('roll-speed-out');
 const rockSpeedOut = document.getElementById('rock-speed-out');
 const boardNote = document.getElementById('board-note');
@@ -39,6 +41,7 @@ const COLOURS = {
   dimension: '#1f2328',
   boardDeck: '#111827',
   boardGrip: '#374151',
+  rider: '#7c3aed',
   truck: '#6b7280',
   wheel: '#f5f5f4',
   wheelEdge: '#57534e',
@@ -69,14 +72,18 @@ function computeGeometry(height, radius, coping, board) {
   };
 }
 
+// basePerUnit converts to the units used internally: cm for lengths, cm/s for speeds and kg for masses.
 const UNITS = {
-  cm: { cmPerUnit: 1, decimals: 1 },
-  ft: { cmPerUnit: 30.48, decimals: 2 },
-  mm: { cmPerUnit: 0.1, decimals: 1 },
-  in: { cmPerUnit: 2.54, decimals: 3 },
-  // Speeds, as cm/s per unit
-  'km/h': { cmPerUnit: 100000 / 3600, decimals: 1 },
-  mph: { cmPerUnit: 160934.4 / 3600, decimals: 1 },
+  cm: { basePerUnit: 1, decimals: 1 },
+  ft: { basePerUnit: 30.48, decimals: 2 },
+  mm: { basePerUnit: 0.1, decimals: 1 },
+  in: { basePerUnit: 2.54, decimals: 3 },
+  // Speeds
+  'km/h': { basePerUnit: 100000 / 3600, decimals: 1 },
+  mph: { basePerUnit: 160934.4 / 3600, decimals: 1 },
+  // Masses
+  kg: { basePerUnit: 1, decimals: 1 },
+  lb: { basePerUnit: 0.45359237, decimals: 1 },
 };
 
 
@@ -98,26 +105,27 @@ const UNIT_GROUPS = {
     current: 'in',
   },
   speed: { radioName: 'speed-units', labelClass: 'speed-unit-name', inputs: [speedInput], current: 'mph' },
+  riderMass: { radioName: 'rider-mass-units', labelClass: 'rider-mass-unit-name', inputs: [riderMassInput], current: 'kg' },
 };
 
 function formatLength(cm, group = 'ramp') {
   const unitName = UNIT_GROUPS[group].current;
   const unit = UNITS[unitName];
-  return `${(cm / unit.cmPerUnit).toFixed(unit.decimals)} ${unitName}`;
+  return `${(cm / unit.basePerUnit).toFixed(unit.decimals)} ${unitName}`;
 }
 
-function toCm(input, group) {
-  return Number(input.value) * UNITS[UNIT_GROUPS[group].current].cmPerUnit;
+function toBaseUnits(input, group) {
+  return Number(input.value) * UNITS[UNIT_GROUPS[group].current].basePerUnit;
 }
 
-/** Returns the entered dimensions converted to cm. */
+/** Returns the entered values converted to the units used internally. */
 function readInputs() {
-  const height = toCm(heightInput, 'ramp');
-  const radius = toCm(radiusInput, 'ramp');
+  const height = toBaseUnits(heightInput, 'ramp');
+  const radius = toBaseUnits(radiusInput, 'ramp');
   const coping = {
-    diameter: toCm(copingInput, 'coping'),
-    aboveDeck: toCm(copingAboveDeckInput, 'protrusion'),
-    fromRamp: toCm(copingFromRampInput, 'protrusion'),
+    diameter: toBaseUnits(copingInput, 'coping'),
+    aboveDeck: toBaseUnits(copingAboveDeckInput, 'protrusion'),
+    fromRamp: toBaseUnits(copingFromRampInput, 'protrusion'),
   };
   if (!(height > 0) || !(radius > 0)) {
     return { error: 'Height and radius must both be positive numbers.' };
@@ -132,15 +140,24 @@ function readInputs() {
   const board = {
     position: document.querySelector('input[name="board-position"]:checked').value,
     trick: document.querySelector('input[name="trick"]:checked').value,
-    wheelbase: toCm(wheelbaseInput, 'wheelbase'),
-    deckUndersideHeight: toCm(boardHeightInput, 'boardHeight'),
-    speed: toCm(speedInput, 'speed'),
+    wheelbase: toBaseUnits(wheelbaseInput, 'wheelbase'),
+    deckUndersideHeight: toBaseUnits(boardHeightInput, 'boardHeight'),
+    speed: toBaseUnits(speedInput, 'speed'),
+    riderMass: toBaseUnits(riderMassInput, 'riderMass'),
+    frontShare: Number(frontShareInput.value) / 100,
   };
   if (board.position !== 'none' && (!(board.wheelbase > 0) || !(board.deckUndersideHeight > 0))) {
     return { error: 'Skateboard wheelbase and deck underside height must both be positive numbers.' };
   }
   if (board.position === 'animation' && (speedInput.value === '' || !(board.speed >= 0))) {
     return { error: 'Starting speed must be zero or more.' };
+  }
+  if (board.position === 'animation' && (riderMassInput.value === '' || !(board.riderMass >= 0))) {
+    return { error: 'Rider weight must be zero or more.' };
+  }
+  if (board.position === 'animation'
+    && (frontShareInput.value === '' || !(board.frontShare >= 0 && board.frontShare <= 1))) {
+    return { error: 'Weight on the front foot must be between 0 and 100%.' };
   }
   return { height, radius, coping, board };
 }
@@ -153,12 +170,12 @@ function showUnitLabels(group) {
 /** Converts the group's entered values into the new unit so the sizes stay the same. */
 function changeUnit(group, newUnit) {
   const unitGroup = UNIT_GROUPS[group];
-  const fromCmPerUnit = UNITS[unitGroup.current].cmPerUnit;
+  const fromBasePerUnit = UNITS[unitGroup.current].basePerUnit;
   const to = UNITS[newUnit];
   for (const input of unitGroup.inputs) {
     const value = Number(input.value);
     if (input.value !== '' && Number.isFinite(value)) {
-      input.value = Number((value * fromCmPerUnit / to.cmPerUnit).toFixed(to.decimals));
+      input.value = Number((value * fromBasePerUnit / to.basePerUnit).toFixed(to.decimals));
     }
   }
   unitGroup.current = newUnit;
@@ -250,14 +267,17 @@ function draw(geo) {
 
   if (position === 'animation') {
     const bounds = boardViewBounds(geo, sampleRide(geo, rideRange(geo)));
+    // Leave room above for air: the most height the starting speed could buy, plus a board length.
+    const { wheelbase, speed } = geo.board;
+    const boardLength = wheelbase * (1 + BOARD_OVERHANG_PER_WHEELBASE * 2);
+    bounds.maxY = Math.max(bounds.maxY, Math.min(geo.height + boardLength * 2, (speed * speed) / (2 * GRAVITY_CM_PER_S2) + boardLength));
     const range = offCanvasRange(geo, visibleBoardArea(bounds));
-    const timeline = geo.board.trick === 'roll' ? rollTimeline(geo, range) : rockToFakieTimeline(geo, range);
-    if (timeline) {
-      if (timeline.note) showBoardNote(timeline.note);
-      startAnimation(geo, timeline, bounds);
-      return;
-    }
-    showBoardNote("The skateboard can't rock to fakie on this ramp.");
+    const timeline = geo.board.trick === 'roll'
+      ? physicsRollTimeline(geo, range)
+      : physicsRockToFakieTimeline(geo, range);
+    if (timeline.note) showBoardNote(timeline.note);
+    startAnimation(geo, timeline, bounds);
+    return;
   }
 
   const placement = position === 'animation' ? null : placeBoard(geo);
@@ -272,53 +292,14 @@ function showBoardNote(text) {
   boardNote.hidden = false;
 }
 
-const easeInOut = (t) => (1 - Math.cos(Math.PI * t)) / 2;
-
 const GRAVITY_CM_PER_S2 = 981;
 const SIM_STEP_S = 1 / 240;
-const MAX_SIM_S = 30;
-// Keeps the board moving through the instant it stops at the top of its climb.
-const MIN_TURN_SPEED_CM_PER_S = 2;
 const END_HOLD_S = 0.6;
-const ROCK_S = 0.5;
 
 /** The board's centre of mass, taken as the middle of the deck. */
 function centreOfMass(geo, pose) {
   const { wheelbase, deckUndersideHeight } = geo.board;
   return add(add(pose.back, mul(pose.u, wheelbase / 2)), mul(pose.v, deckUndersideHeight + BOARD_THICKNESS_CM / 2));
-}
-
-/**
- * Rolls the board along the surface under gravity, without friction, from back wheel position s at the given
- * speed of its centre of mass (cm/s) in the given direction (1 is up the ramp). The board slows as its centre
- * of mass rises and turns back when it runs out of speed. Returns a pose every SIM_STEP_S until stop(s, direction).
- */
-function simulateRoll(geo, s, speed, direction, stop) {
-  const at = (sAt) => {
-    const pose = ridePose(geo, sAt);
-    return { s: sAt, pose, centre: centreOfMass(geo, pose) };
-  };
-  let state = at(s);
-  let dir = direction;
-  const energy = (speed * speed) / 2 + GRAVITY_CM_PER_S2 * state.centre.y;
-  const speedAt = (centre) => Math.sqrt(Math.max(0, 2 * (energy - GRAVITY_CM_PER_S2 * centre.y)));
-  const poses = [];
-
-  for (let t = 0; t < MAX_SIM_S && !stop(state.s, dir); t += SIM_STEP_S) {
-    poses.push(state.pose);
-    // How far the centre of mass moves per cm the back wheels move along the surface.
-    const probe = 0.05;
-    const centreRate = len(sub(at(state.s + dir * probe).centre, state.centre)) / probe;
-    const step = (Math.max(speedAt(state.centre), MIN_TURN_SPEED_CM_PER_S) / Math.max(centreRate, 1e-6)) * SIM_STEP_S;
-    const next = at(state.s + dir * step);
-    if (energy - GRAVITY_CM_PER_S2 * next.centre.y < 0) {
-      dir = -dir;
-    } else {
-      state = next;
-    }
-  }
-  poses.push(state.pose);
-  return { poses, s: state.s, direction: dir };
 }
 
 /** Plays poses sampled every SIM_STEP_S. */
@@ -332,57 +313,6 @@ function timelineFromPoses(poses, note = null) {
 
 function holdLast(poses, seconds) {
   return Array.from({ length: Math.round(seconds / SIM_STEP_S) }, () => poses[poses.length - 1]);
-}
-
-/**
- * Rolls in from off the canvas at the starting speed. The board either runs out of speed and rolls back down, or
- * makes it over the coping and off along the deck. Either way it leaves the canvas.
- */
-function rollTimeline(geo, range) {
-  const { poses } = simulateRoll(geo, range.from, geo.board.speed, 1,
-    (s, dir) => (dir < 0 && s <= range.from) || (dir > 0 && s >= range.to));
-  return timelineFromPoses([...poses, ...holdLast(poses, END_HOLD_S)]);
-}
-
-/** Rotates a board pose about a point, anticlockwise for a positive angle. */
-function rotatePose(pose, about, angle, wheelbase) {
-  const cos = Math.cos(angle);
-  const sin = Math.sin(angle);
-  const rotate = (p) => ({ x: p.x * cos - p.y * sin, y: p.x * sin + p.y * cos });
-  return boardPose(add(about, rotate(sub(pose.back, about))), rotate(pose.u), wheelbase);
-}
-
-/**
- * Rolls up at the starting speed into the low position with the deck on the coping, rocks forward on the
- * coping until the front wheels touch the deck, rocks back, then rolls back down fakie from a standstill.
- * Without enough speed to reach the low position the board just rolls back down. Null when the board can't
- * sit in the low position at all.
- */
-function rockToFakieTimeline(geo, range) {
-  const lowGeo = { ...geo, board: { ...geo.board, position: 'low' } };
-  const low = placeBoard(lowGeo);
-  if (!low) return null;
-
-  const up = simulateRoll(geo, range.from, geo.board.speed, 1,
-    (s, dir) => (dir < 0 && s <= range.from) || (dir > 0 && s >= low.s));
-  if (up.direction < 0) {
-    return timelineFromPoses([...up.poses, ...holdLast(up.poses, END_HOLD_S)],
-      'Not fast enough to reach the coping for a rock to fakie.');
-  }
-
-  // Rotating about the coping centre keeps the deck resting on the coping. Rock until the front wheels meet
-  // the deck, or not at all when they are already on it.
-  const copingPos = copingCentre(geo);
-  const { wheelbase } = geo.board;
-  const frontToDeck = (angle) => rotatePose(low, copingPos, angle, wheelbase).front.y - geo.height;
-  const rockAngle = frontToDeck(0) > 1e-6 ? bisect(frontToDeck, -Math.PI / 2, 0) ?? 0 : 0;
-  const rockSteps = Math.round(ROCK_S / SIM_STEP_S);
-  const rock = [];
-  for (let i = 0; i <= rockSteps; i++) rock.push(rotatePose(low, copingPos, rockAngle * easeInOut(i / rockSteps), wheelbase));
-  const rockBack = [...rock].reverse();
-
-  const down = simulateRoll(geo, low.s, 0, -1, (s, dir) => dir < 0 && s <= range.from);
-  return timelineFromPoses([...up.poses.slice(0, -1), ...rock, ...rockBack, ...down.poses, ...holdLast(down.poses, END_HOLD_S)]);
 }
 
 /** Lowest starting speed (cm/s) at which the board's centre of mass can rise from the start to every point up to sTo. */
@@ -920,6 +850,35 @@ function drawBoard(geo, pose, vp) {
   ctx.stroke();
 
   ctx.restore();
+  if (pose.rider) drawRider(geo, pose, vp);
+}
+
+/**
+ * Where the rider's weight is modelled: a semicircle on the deck at each foot, labelled with the share of their
+ * weight on it.
+ */
+function drawRider(geo, pose, vp) {
+  const { backFoot, frontFoot, loads } = pose.rider;
+  const deckTop = geo.board.deckUndersideHeight + BOARD_THICKNESS_CM;
+  const footRadius = Math.max(5, 3 * vp.scale);
+  const boardAngle = Math.atan2(-pose.u.y, pose.u.x);
+  // Away from the deck, on screen
+  const outward = { x: pose.v.x, y: -pose.v.y };
+
+  ctx.save();
+  ctx.fillStyle = COLOURS.rider;
+  for (const foot of [{ along: backFoot, load: loads.back }, { along: frontFoot, load: loads.front }]) {
+    const p = toPx(vp, add(add(pose.back, mul(pose.u, foot.along)), mul(pose.v, deckTop)));
+    // Flat side on the deck
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, footRadius, boardAngle + Math.PI, boardAngle);
+    ctx.closePath();
+    ctx.fill();
+    const labelGap = footRadius + 14;
+    drawLabel(`${Math.round(foot.load * 100)}%`, p.x + outward.x * labelGap, p.y + outward.y * labelGap,
+      COLOURS.rider, 'center', true);
+  }
+  ctx.restore();
 }
 
 function drawRadius(geo, vp) {
@@ -1093,7 +1052,7 @@ function drawLabel(text, x, y, colour, align, withBackground = false) {
 
 for (const input of [
   heightInput, radiusInput, copingInput, copingAboveDeckInput, copingFromRampInput, wheelbaseInput, boardHeightInput,
-  speedInput,
+  speedInput, riderMassInput, frontShareInput,
 ]) {
   input.addEventListener('input', update);
 }
@@ -1110,4 +1069,5 @@ for (const [group, { radioName }] of Object.entries(UNIT_GROUPS)) {
   UNIT_GROUPS[group].current = document.querySelector(`input[name="${radioName}"]:checked`).value;
   showUnitLabels(group);
 }
-update();
+// Run once every script has loaded, as the animations use physics.js.
+document.addEventListener('DOMContentLoaded', update);

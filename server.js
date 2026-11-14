@@ -5,6 +5,11 @@ const path = require('node:path');
 const PORT = process.env.PORT || 3000;
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
+// Browser builds of npm dependencies, served from node_modules
+const VENDOR_FILES = {
+  '/vendor/planck.min.js': path.join(__dirname, 'node_modules', 'planck', 'dist', 'planck.min.js'),
+};
+
 const CONTENT_TYPES = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
@@ -13,9 +18,9 @@ const CONTENT_TYPES = {
 
 const server = http.createServer((req, res) => {
   const urlPath = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
-  const filePath = path.join(PUBLIC_DIR, urlPath === '/' ? 'index.html' : urlPath);
+  const filePath = VENDOR_FILES[urlPath] ?? path.join(PUBLIC_DIR, urlPath === '/' ? 'index.html' : urlPath);
 
-  if (!filePath.startsWith(PUBLIC_DIR + path.sep)) {
+  if (!VENDOR_FILES[urlPath] && !filePath.startsWith(PUBLIC_DIR + path.sep)) {
     res.writeHead(403).end('Forbidden');
     return;
   }
