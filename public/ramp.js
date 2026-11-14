@@ -14,6 +14,16 @@ const frontShareInput = document.getElementById('front-share');
 const rollSpeedOut = document.getElementById('roll-speed-out');
 const rockSpeedOut = document.getElementById('rock-speed-out');
 const boardNote = document.getElementById('board-note');
+const boardReadout = document.getElementById('board-readout');
+const readouts = {
+  backFoot: document.getElementById('back-foot-out'),
+  backForce: document.getElementById('back-foot-force'),
+  frontFoot: document.getElementById('front-foot-out'),
+  frontForce: document.getElementById('front-foot-force'),
+  cog: document.getElementById('cog-out'),
+  speed: document.getElementById('speed-out'),
+  action: document.getElementById('action-out'),
+};
 const hitsOut = document.getElementById('hits-out');
 const angleOut = document.getElementById('angle-out');
 const arcOut = document.getElementById('arc-out');
@@ -197,6 +207,7 @@ function update() {
     rockSpeedOut.textContent = '–';
     vertStat.hidden = true;
     boardNote.hidden = true;
+    boardReadout.hidden = true;
     stopAnimation();
     clearCanvases();
     return;
@@ -263,6 +274,7 @@ function draw(geo) {
   const { position } = geo.board;
   boardView.hidden = position === 'none';
   boardNote.hidden = true;
+  boardReadout.hidden = position !== 'animation';
   if (position === 'none') return;
 
   if (position === 'animation') {
@@ -357,10 +369,27 @@ function startAnimation(geo, timeline, bounds) {
   const step = (now) => {
     const progress = ((now - startTime) % timeline.durationMs) / timeline.durationMs;
     const pose = timeline.poseAt(progress);
-    if (pose) drawBoardView(geo, pose, bounds);
+    if (pose) {
+      drawBoardView(geo, pose, bounds);
+      showReadout(geo, pose);
+    }
     animation.frame = requestAnimationFrame(step);
   };
   step(startTime);
+}
+
+/** The live figures under the skateboard canvas for the current moment of the animation. */
+function showReadout(geo, pose) {
+  const { rider } = pose;
+  const weightN = geo.board.riderMass * GRAVITY_CM_PER_S2 / 100;
+  const foot = (load) => [`${Math.round(load * 100)}%`, `of body weight · ${Math.round(load * weightN)} N`];
+  [readouts.backFoot.textContent, readouts.backForce.textContent] = foot(rider.loads.back);
+  [readouts.frontFoot.textContent, readouts.frontForce.textContent] = foot(rider.loads.front);
+  const cogAlong = dot(sub(rider.cog, pose.back), pose.u);
+  const unit = UNIT_GROUPS.wheelbase.current;
+  readouts.cog.textContent = `${(cogAlong / UNITS[unit].basePerUnit).toFixed(1)} ${unit}`;
+  readouts.speed.textContent = formatLength(rider.speed, 'speed');
+  readouts.action.textContent = rider.action;
 }
 
 function stopAnimation() {
@@ -854,8 +883,8 @@ function drawBoard(geo, pose, vp) {
 }
 
 /**
- * Where the rider's weight is modelled: a semicircle on the deck at each foot, labelled with the share of their
- * weight on it.
+ * Where the rider's weight is modelled: a semicircle on the deck at each foot, labelled with how hard it pushes as
+ * a share of the rider's weight, and the centre of gravity of board and rider with a line straight down from it.
  */
 function drawRider(geo, pose, vp) {
   const { backFoot, frontFoot, loads } = pose.rider;
@@ -879,6 +908,44 @@ function drawRider(geo, pose, vp) {
       COLOURS.rider, 'center', true);
   }
   ctx.restore();
+  if (pose.rider.cog) drawCentreOfGravity(geo, pose.rider.cog, vp);
+}
+
+/** The usual quartered circle, with a dashed line straight down to the surface below it. */
+function drawCentreOfGravity(geo, cog, vp) {
+  const c = toPx(vp, cog);
+  const below = toPx(vp, { x: cog.x, y: surfaceHeightBelow(geo, cog.x) });
+  const radius = 7;
+
+  ctx.save();
+  ctx.strokeStyle = COLOURS.dimension;
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([4, 4]);
+  ctx.beginPath();
+  ctx.moveTo(c.x, c.y);
+  ctx.lineTo(below.x, below.y);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  for (let quarter = 0; quarter < 4; quarter++) {
+    ctx.beginPath();
+    ctx.moveTo(c.x, c.y);
+    ctx.arc(c.x, c.y, radius, (quarter * Math.PI) / 2, ((quarter + 1) * Math.PI) / 2);
+    ctx.closePath();
+    ctx.fillStyle = quarter % 2 === 0 ? COLOURS.dimension : '#ffffff';
+    ctx.fill();
+  }
+  ctx.beginPath();
+  ctx.arc(c.x, c.y, radius, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+}
+
+/** Height of the riding surface (ground, transition or deck) below x. */
+function surfaceHeightBelow({ radius, groundLength, height }, x) {
+  if (x <= 0) return 0;
+  if (x >= groundLength) return height;
+  return radius - Math.sqrt(radius * radius - x * x);
 }
 
 function drawRadius(geo, vp) {

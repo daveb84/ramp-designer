@@ -173,6 +173,32 @@
     <div class="canvas-wrap" id="board-view">
       <canvas id="board-canvas" class="detail"></canvas>
     </div>
+
+    <section class="results readout" id="board-readout" hidden>
+      <div class="stat">
+        <span class="stat-label">Back foot</span>
+        <span class="stat-value" id="back-foot-out">–</span>
+        <span class="stat-detail" id="back-foot-force">–</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">Front foot</span>
+        <span class="stat-value" id="front-foot-out">–</span>
+        <span class="stat-detail" id="front-foot-force">–</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">Centre of gravity</span>
+        <span class="stat-value" id="cog-out">–</span>
+        <span class="stat-detail">ahead of the back axle, along the board</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">Speed</span>
+        <span class="stat-value" id="speed-out">–</span>
+      </div>
+      <div class="stat stat-wide">
+        <span class="stat-label">Rider</span>
+        <span class="stat-value stat-text" id="action-out">–</span>
+      </div>
+    </section>
   </main>
 
   <script src="vendor/planck.min.js"></script>

@@ -5,7 +5,12 @@
  * kilograms; the rest of the app works in cm, so positions are converted on the way in and out.
  *
  * The rider's weight sits on the deck as two point masses, one at each foot: the front foot over the front truck
- * and the back foot on the tail, just behind the back truck. Board, wheels and rider are one rigid body.
+ * and the back foot on the tail, just behind the back truck. Board, wheels and rider are one rigid body. Shifting
+ * the weight between the feet moves the rider's centre of gravity along the board.
+ *
+ * The rider can also kick: for a moment their legs push one foot into the deck harder than their weight and ease off
+ * the other, to flick the nose up or press it down. Each kick is followed by easing off by the same amount, as the
+ * rider's body would rise and settle, so on average the feet still carry just the rider's weight.
  */
 
 const PHYSICS_STEP_S = SIM_STEP_S;
@@ -13,11 +18,20 @@ const PHYSICS_MAX_S = 15;
 const DECK_MASS_KG = 1.6;
 // Each truck with its pair of wheels
 const TRUCK_MASS_KG = 0.9;
-// Maple sliding on steel coping
-const DECK_FRICTION = 0.3;
+// Maple sliding on waxed steel coping
+const DECK_FRICTION = 0.15;
 // Where the back foot stands, behind the back axle, as a fraction of the tail's length.
 const BACK_FOOT_TAIL_FRACTION = 0.5;
-const ROCK_LIFT_CLEARANCE_CM = 3;
+// How close the front wheels get to the coping before the rider kicks the nose up over it.
+const ROCK_LIFT_LEAD_CM = 8;
+// How long the board stays on the coping before the rider kicks back off it.
+const ROCK_STALL_S = 0.3;
+// If the board is still this slow this long after kicking back off the coping, the rider kicks again.
+const ROCK_RETRY_S = 0.35;
+const ROCK_STUCK_SPEED_CM_PER_S = 20;
+// Kicks as pushes from each foot in multiples of the rider's weight. The first part kicks, the second eases off.
+const LIFT_KICK = [{ seconds: 0.15, back: 1.5, front: 0 }, { seconds: 0.15, back: 0.5, front: 0 }];
+const RETURN_KICK = [{ seconds: 0.12, back: 1.4, front: 0 }, { seconds: 0.12, back: 0.6, front: 0 }];
 // How quickly the rider turns the board in the air to line it up with the landing, in radians per second.
 const AIR_CONTROL_RATE = 8;
 
@@ -32,17 +46,57 @@ function footPositions(geo) {
   return { backFoot: -overhang * BACK_FOOT_TAIL_FRACTION, frontFoot: wheelbase };
 }
 
-/** The riding surface as a chain: ground in front, the transition, any vert, then the deck. */
-function rampChain(geo, runOut) {
-  const points = [{ x: -runOut, y: 0 }, { x: 0, y: 0 }];
+/**
+ * Adds the ramp to the body: the ground in front and the transition as one smooth surface, a solid block for the
+ * deck (whose face is also any vert), and the coping. The deck is solid because the board slams down onto it and a
+ * solid block pushes anything forced into it back out on top, where a thin surface can be pushed through from the
+ * wrong side. The ground and transition are one continuous surface because a wheel rolling across a join between
+ * separate shapes catches on the corner and jumps. As on a real ramp, the corner of the lip is cut away where the
+ * coping sits, so the board only ever meets the round coping there.
+ */
+function addRamp(geo, body, runOut) {
+  const coping = copingCentre(geo);
+  const r = geo.coping.diameter / 2;
+  const insideCoping = (p) => Math.hypot(p.x - coping.x, p.y - coping.y) < r;
+  const surface = { friction: DECK_FRICTION };
+  const depth = 100;
+  const polygon = (points) => new planck.Polygon(points.map(vecM));
+
+  // The deck block, with its top corner cut away under the coping where the coping reaches over it.
+  const L = geo.groundLength;
+  const deckCut = r * r - (geo.height - coping.y) ** 2;
+  const deckStart = deckCut > 0 ? Math.max(L, coping.x + Math.sqrt(deckCut)) : L;
+  const faceTop = { x: L, y: Math.min(geo.height, coping.y) };
+  const cutCorner = deckStart > L && insideCoping(faceTop);
+  body.createFixture(polygon([
+    { x: L, y: -depth },
+    { x: L + runOut, y: -depth },
+    { x: L + runOut, y: geo.height },
+    ...(cutCorner ? [{ x: deckStart, y: geo.height }, faceTop] : [{ x: L, y: geo.height }]),
+  ]), surface);
+
+  // The ground and the transition, stopping where it meets the coping.
+  const pointAt = (phi) => ({ x: geo.radius * Math.sin(phi), y: geo.radius * (1 - Math.cos(phi)) });
   const segments = Math.max(8, Math.ceil((geo.angleRad * 180) / Math.PI));
-  for (let i = 1; i <= segments; i++) {
+  const arc = [{ x: -runOut, y: 0 }];
+  for (let i = 0; i <= segments; i++) {
     const phi = (geo.angleRad * i) / segments;
-    points.push({ x: geo.radius * Math.sin(phi), y: geo.radius * (1 - Math.cos(phi)) });
+    if (insideCoping(pointAt(phi))) {
+      const lastOutside = (geo.angleRad * (i - 1)) / segments;
+      const meets = bisect((angle) => Math.hypot(pointAt(angle).x - coping.x, pointAt(angle).y - coping.y) - r,
+        lastOutside, phi);
+      if (meets !== null) arc.push(pointAt(meets));
+      break;
+    }
+    arc.push(pointAt(phi));
   }
-  if (geo.vertHeight > 0) points.push({ x: geo.groundLength, y: geo.height });
-  points.push({ x: geo.groundLength + runOut, y: geo.height });
-  return new planck.Chain(points.map(vecM), false);
+  const transition = new planck.Chain(arc.map(vecM), false);
+  const end = arc[arc.length - 1];
+  const onward = geo.vertHeight > 0 && !insideCoping(end) ? { x: L, y: end.y + 1 } : coping;
+  transition.setNextVertex(vecM(onward));
+  body.createFixture(transition, surface);
+
+  body.createFixture(new planck.Circle(vecM(coping), toM(r)), surface);
 }
 
 /**
@@ -56,9 +110,7 @@ function buildWorld(geo, startPose) {
   const world = new planck.World({ gravity: planck.Vec2(0, -9.81) });
 
   const ramp = world.createBody();
-  ramp.createFixture(rampChain(geo, 10000), { friction: DECK_FRICTION });
-  const coping = copingCentre(geo);
-  ramp.createFixture(new planck.Circle(vecM(coping), toM(geo.coping.diameter / 2)), { friction: DECK_FRICTION });
+  addRamp(geo, ramp, 10000);
 
   const { u, v } = startPose;
   const onBoard = (along, up) => add(add(startPose.back, mul(u, along)), mul(v, up));
@@ -85,6 +137,10 @@ function buildWorld(geo, startPose) {
   );
   const frontFoot = foot(feet.frontFoot);
   const backFoot = foot(feet.backFoot);
+  const footPoints = {
+    front: planck.Vec2(toM(feet.frontFoot - wheelbase / 2), toM(BOARD_THICKNESS_CM / 2)),
+    back: planck.Vec2(toM(feet.backFoot - wheelbase / 2), toM(BOARD_THICKNESS_CM / 2)),
+  };
   let frontShare = 0.5;
   const setFrontShare = (share) => {
     frontFoot.setDensity((riderMass * share) / footArea);
@@ -102,7 +158,27 @@ function buildWorld(geo, startPose) {
       friction: 0,
     }));
 
-  return { world, deck, wheelFixtures, setFrontShare, getFrontShare: () => frontShare };
+  /**
+   * Pushes each foot into the deck with the given multiple of the rider's weight. Their weight already pushes as
+   * it is split between the feet, so only the difference is added.
+   */
+  const pushFeet = (pushes) => {
+    const into = deck.getWorldVector(planck.Vec2(0, -1));
+    const weight = riderMass * 9.81;
+    const extra = { front: pushes.front - frontShare, back: pushes.back - (1 - frontShare) };
+    for (const side of ['front', 'back']) {
+      deck.applyForce(planck.Vec2.mul(into, extra[side] * weight), deck.getWorldPoint(footPoints[side]));
+    }
+  };
+
+  return { world, deck, wheelFixtures, setFrontShare, getFrontShare: () => frontShare, pushFeet };
+}
+
+function touchingAnything(body) {
+  for (let edge = body.getContactList(); edge; edge = edge.next) {
+    if (edge.contact.isTouching()) return true;
+  }
+  return false;
 }
 
 function wheelsTouching(sim) {
@@ -147,8 +223,10 @@ function poseFromDeck(geo, deck) {
 /**
  * Simulates the board rolling in from back wheel position range.from at the starting speed. Stops once the board
  * has left the visible area (rolled back off the left, or along the deck past range.to), or after PHYSICS_MAX_S.
- * The rider script is called every step with the current state and can shift the rider's weight.
- * Returns a pose every PHYSICS_STEP_S, each with where the feet are and the share of weight on each.
+ * The rider script is called every step with the current state and can shift the rider's weight, start a kick,
+ * or describe what the rider is doing. Returns a pose every PHYSICS_STEP_S, each with where the feet are, how hard
+ * each pushes as a multiple of the rider's weight, the centre of gravity of board and rider, the speed, and what
+ * the rider is doing.
  */
 function simulateBoard(geo, range, riderScript) {
   const start = ridePose(geo, range.from);
@@ -160,16 +238,51 @@ function simulateBoard(geo, range, riderScript) {
   const leftEdge = surfacePoint(geo, range.from).x;
   const rightEdge = surfacePoint(geo, range.to).x;
   const poses = [];
+  let kick = null;
+  let action = 'Rolling';
+  const startKick = (parts, t) => { kick = { parts, start: t }; };
+  /** Each foot's push during the current kick, or null when not kicking. */
+  const kickPushes = (t) => {
+    if (!kick) return null;
+    let elapsed = t - kick.start;
+    for (const part of kick.parts) {
+      if (elapsed < part.seconds) return part;
+      elapsed -= part.seconds;
+    }
+    kick = null;
+    return null;
+  };
+
   for (let t = 0; t < PHYSICS_MAX_S; t += PHYSICS_STEP_S) {
     const pose = poseFromDeck(geo, sim.deck);
-    const share = sim.getFrontShare();
-    poses.push({ ...pose, rider: { ...feet, loads: { front: share, back: 1 - share } } });
     const velocity = vecCm(sim.deck.getLinearVelocity());
     const nearX = Math.min(pose.back.x, pose.front.x);
     const farX = Math.max(pose.back.x, pose.front.x);
-    if ((velocity.x < 0 && farX < leftEdge) || (velocity.x > 0 && nearX > rightEdge)) break;
-    riderScript?.({ t, pose, velocity, setFrontShare: sim.setFrontShare });
+    const state = { cog: vecCm(sim.deck.getWorldCenter()), speed: len(velocity) };
+    if ((velocity.x < 0 && farX < leftEdge) || (velocity.x > 0 && nearX > rightEdge)) {
+      poses.push({ ...pose, rider: { ...poses[poses.length - 1]?.rider, ...feet, ...state } });
+      break;
+    }
+    riderScript?.({
+      t, pose, velocity,
+      setFrontShare: sim.setFrontShare,
+      kick: (parts) => startKick(parts, t),
+      say: (text) => { action = text; },
+    });
+
+    // Feet only push against the board while it's on something; in the air the rider steers it instead.
+    const share = sim.getFrontShare();
+    let loads = { front: share, back: 1 - share };
+    const onSomething = touchingAnything(sim.deck);
+    if (onSomething) {
+      const pushes = kickPushes(t);
+      if (pushes) {
+        sim.pushFeet(pushes);
+        loads = { front: pushes.front, back: pushes.back };
+      }
+    }
     if (!wheelsTouching(sim)) applyAirControl(geo, sim.deck);
+    poses.push({ ...pose, rider: { ...feet, ...state, loads, action: onSomething ? action : 'In the air' } });
     sim.world.step(PHYSICS_STEP_S, 8, 3);
   }
   return poses;
@@ -181,37 +294,69 @@ function physicsRollTimeline(geo, range) {
   return timelineFromPoses([...poses, ...holdLast(poses, END_HOLD_S)]);
 }
 
+const ROCK_ACTIONS = {
+  lift: 'Kicking the tail to lift the nose over the coping',
+  place: 'Weight forward to set the front truck on the deck',
+  stall: 'Rocking on the coping',
+  return: 'Kicking the tail to lift back over the coping',
+  away: 'Rolling away',
+};
+
 /**
- * Rolls in, then the rider: leans back to lift the nose as the front wheels reach the coping, shifts their weight
- * forward once the front truck is past the coping to set the board down on it, then leans back again as the board
- * stops to roll away fakie. How far over the coping the board gets depends on the speed.
+ * Rolls in, then the rider: kicks the tail as the front wheels near the coping to flick the nose up over it, moves
+ * their weight forward once the front truck is past to set it down on the deck with the board resting on the coping,
+ * holds it there for a moment, then kicks the tail again to lift the front wheels back over and rolls away fakie,
+ * kicking again if the front wheels catch on the coping.
+ * How far over the coping the board gets depends on the speed.
  */
 function physicsRockToFakieTimeline(geo, range) {
   const coping = copingCentre(geo);
   const copingRadius = geo.coping.diameter / 2;
   const wheelRadius = geo.board.deckUndersideHeight * WHEEL_RADIUS_PER_DECK_UNDERSIDE_HEIGHT;
   let phase = 'approach';
+  let phaseStart = 0;
   let reachedCoping = false;
+  let rolledOnto = false;
 
-  const poses = simulateBoard(geo, range, ({ pose, velocity, setFrontShare }) => {
+  const poses = simulateBoard(geo, range, ({ t, pose, velocity, setFrontShare, kick, say }) => {
+    if (rolledOnto) return;
     const frontAxle = add(pose.front, mul(pose.v, wheelRadius));
     const alongBoard = dot(velocity, pose.u);
-    if (phase === 'approach' && len(sub(frontAxle, coping)) < wheelRadius + copingRadius + ROCK_LIFT_CLEARANCE_CM) {
-      phase = 'lift';
-      setFrontShare(0.05);
-    } else if (phase === 'lift' && frontAxle.x > coping.x + copingRadius) {
-      phase = 'rock';
+    const enter = (next) => { phase = next; phaseStart = t; say(ROCK_ACTIONS[next]); };
+    const frontPastCoping = frontAxle.x > coping.x + copingRadius;
+
+    const backAxle = add(pose.back, mul(pose.v, wheelRadius));
+    if (['place', 'stall', 'return'].includes(phase) && backAxle.x > coping.x + copingRadius + wheelRadius) {
+      // Came in too fast: the whole board has gone over onto the deck, so ride away along it.
+      rolledOnto = true;
+      setFrontShare(geo.board.frontShare);
+      say('Went right over onto the deck');
+    } else if (phase === 'approach' && len(sub(frontAxle, coping)) < wheelRadius + copingRadius + ROCK_LIFT_LEAD_CM) {
+      enter('lift');
+      setFrontShare(0.3);
+      kick(LIFT_KICK);
+    } else if (phase === 'lift' && frontPastCoping) {
+      enter('place');
       reachedCoping = true;
-      setFrontShare(0.9);
-    } else if (phase === 'rock' && alongBoard <= 0) {
-      phase = 'fakie';
-      setFrontShare(0.2);
-    } else if ((phase === 'fakie' && frontAxle.x < coping.x - copingRadius - wheelRadius)
+      setFrontShare(0.85);
+    } else if (phase === 'place' && alongBoard <= 0) {
+      enter('stall');
+    } else if (phase === 'stall' && t - phaseStart >= ROCK_STALL_S) {
+      enter('return');
+      setFrontShare(0.15);
+      kick(RETURN_KICK);
+    } else if (phase === 'return' && t - phaseStart >= ROCK_RETRY_S && Math.abs(alongBoard) < ROCK_STUCK_SPEED_CM_PER_S) {
+      // The front wheels have caught on the coping on the way back; kick again.
+      enter('return');
+      kick(RETURN_KICK);
+    } else if ((phase === 'return' && frontAxle.x < coping.x - copingRadius - wheelRadius)
       || ((phase === 'approach' || phase === 'lift') && alongBoard < 0)) {
-      phase = 'away';
+      enter('away');
       setFrontShare(geo.board.frontShare);
     }
   });
-  const note = reachedCoping ? null : 'Not fast enough to reach the coping for a rock to fakie.';
+  let note = null;
+  if (!reachedCoping) note = 'Not fast enough to reach the coping for a rock to fakie.';
+  if (rolledOnto) note = 'Too fast for a rock to fakie: the board went right over onto the deck.';
   return timelineFromPoses([...poses, ...holdLast(poses, END_HOLD_S)], note);
 }
