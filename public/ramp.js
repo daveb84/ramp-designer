@@ -6,6 +6,7 @@ const copingInput = document.getElementById('coping');
 const copingAboveDeckInput = document.getElementById('coping-above-deck');
 const copingFromRampInput = document.getElementById('coping-from-ramp');
 const wheelbaseInput = document.getElementById('wheelbase');
+const deckLengthInput = document.getElementById('deck-length');
 const boardHeightInput = document.getElementById('board-height');
 const speedInput = document.getElementById('speed');
 const animationControls = document.getElementById('animation-controls');
@@ -107,7 +108,12 @@ const UNIT_GROUPS = {
     inputs: [copingAboveDeckInput, copingFromRampInput],
     current: 'in',
   },
-  wheelbase: { radioName: 'wheelbase-units', labelClass: 'wheelbase-unit-name', inputs: [wheelbaseInput], current: 'in' },
+  wheelbase: {
+    radioName: 'wheelbase-units',
+    labelClass: 'wheelbase-unit-name',
+    inputs: [deckLengthInput, wheelbaseInput],
+    current: 'in',
+  },
   boardHeight: {
     radioName: 'board-height-units',
     labelClass: 'board-height-unit-name',
@@ -151,11 +157,15 @@ function readInputs() {
     position: document.querySelector('input[name="board-position"]:checked').value,
     trick: document.querySelector('input[name="trick"]:checked').value,
     wheelbase: toBaseUnits(wheelbaseInput, 'wheelbase'),
+    deckLength: toBaseUnits(deckLengthInput, 'wheelbase'),
     deckUndersideHeight: toBaseUnits(boardHeightInput, 'boardHeight'),
     speed: toBaseUnits(speedInput, 'speed'),
     riderMass: toBaseUnits(riderMassInput, 'riderMass'),
     frontShare: Number(frontShareInput.value) / 100,
   };
+  if (board.position !== 'none' && !(board.deckLength >= board.wheelbase)) {
+    return { error: 'Skateboard deck length must be at least the wheelbase.' };
+  }
   if (board.position !== 'none' && (!(board.wheelbase > 0) || !(board.deckUndersideHeight > 0))) {
     return { error: 'Skateboard wheelbase and deck underside height must both be positive numbers.' };
   }
@@ -203,6 +213,7 @@ function update() {
     arcOut.textContent = '–';
     lengthOut.textContent = '–';
     hitsOut.textContent = '–';
+    stopSpeedSearch();
     rollSpeedOut.textContent = '–';
     rockSpeedOut.textContent = '–';
     vertStat.hidden = true;
@@ -220,11 +231,10 @@ function update() {
   lengthOut.textContent = formatLength(geo.groundLength);
   vertStat.hidden = geo.vertHeight === 0;
   vertOut.textContent = formatLength(geo.vertHeight);
-  const boardSized = geo.board.wheelbase > 0 && geo.board.deckUndersideHeight > 0;
+  const boardSized = geo.board.wheelbase > 0 && geo.board.deckUndersideHeight > 0
+    && geo.board.deckLength >= geo.board.wheelbase;
   hitsOut.textContent = boardSized ? (deckHitsCoping(geo) ? 'Yes' : 'No') : '–';
-  const low = boardSized ? placeBoard({ ...geo, board: { ...geo.board, position: 'low' } }) : null;
-  rollSpeedOut.textContent = boardSized ? formatLength(speedNeeded(geo, rideRange(geo).to), 'speed') : '–';
-  rockSpeedOut.textContent = low ? formatLength(speedNeeded(geo, low.s), 'speed') : '–';
+  startSpeedSearch(geo, boardSized);
 
   draw(geo);
 }
@@ -281,7 +291,7 @@ function draw(geo) {
     const bounds = boardViewBounds(geo, sampleRide(geo, rideRange(geo)));
     // Leave room above for air: the most height the starting speed could buy, plus a board length.
     const { wheelbase, speed } = geo.board;
-    const boardLength = wheelbase * (1 + BOARD_OVERHANG_PER_WHEELBASE * 2);
+    const boardLength = geo.board.deckLength;
     bounds.maxY = Math.max(bounds.maxY, Math.min(geo.height + boardLength * 2, (speed * speed) / (2 * GRAVITY_CM_PER_S2) + boardLength));
     const range = offCanvasRange(geo, visibleBoardArea(bounds));
     const timeline = geo.board.trick === 'roll'
@@ -294,10 +304,12 @@ function draw(geo) {
 
   const placement = position === 'animation' ? null : placeBoard(geo);
   if (position !== 'animation' && !placement) {
-    showBoardNote(`The skateboard can't sit in the ${position} position on this ramp.`);
+    showBoardNote(`The skateboard can't sit in the ${POSITION_NAMES[position]} position on this ramp.`);
   }
   drawBoardView(geo, placement ?? ridePose(geo, rideRange(geo).from));
 }
+
+const POSITION_NAMES = { low: 'Low', 'middle-ramp': 'Middle - ramp', 'middle-deck': 'Middle - deck', high: 'High' };
 
 function showBoardNote(text) {
   boardNote.textContent = text;
@@ -307,12 +319,6 @@ function showBoardNote(text) {
 const GRAVITY_CM_PER_S2 = 981;
 const SIM_STEP_S = 1 / 240;
 const END_HOLD_S = 0.6;
-
-/** The board's centre of mass, taken as the middle of the deck. */
-function centreOfMass(geo, pose) {
-  const { wheelbase, deckUndersideHeight } = geo.board;
-  return add(add(pose.back, mul(pose.u, wheelbase / 2)), mul(pose.v, deckUndersideHeight + BOARD_THICKNESS_CM / 2));
-}
 
 /** Plays poses sampled every SIM_STEP_S. */
 function timelineFromPoses(poses, note = null) {
@@ -327,17 +333,40 @@ function holdLast(poses, seconds) {
   return Array.from({ length: Math.round(seconds / SIM_STEP_S) }, () => poses[poses.length - 1]);
 }
 
-/** Lowest starting speed (cm/s) at which the board's centre of mass can rise from the start to every point up to sTo. */
-function speedNeeded(geo, sTo) {
-  const range = rideRange(geo);
-  const startHeight = centreOfMass(geo, ridePose(geo, range.from)).y;
-  let maxRise = 0;
-  const steps = 1000;
-  for (let i = 0; i <= steps; i++) {
-    const pose = ridePose(geo, range.from + ((sTo - range.from) * i) / steps);
-    maxRise = Math.max(maxRise, centreOfMass(geo, pose).y - startHeight);
+let speedSearch = null;
+
+/**
+ * Works out the speeds needed by simulating, one simulation at a time between frames so the page stays responsive.
+ * Starting again, or a change to the inputs, abandons any search still running.
+ */
+function startSpeedSearch(geo, boardSized) {
+  stopSpeedSearch();
+  if (!boardSized) {
+    rollSpeedOut.textContent = '–';
+    rockSpeedOut.textContent = '–';
+    return;
   }
-  return Math.sqrt(2 * GRAVITY_CM_PER_S2 * maxRise);
+  rollSpeedOut.textContent = 'Working out…';
+  rockSpeedOut.textContent = 'Working out…';
+  const search = speedsNeeded(geo);
+  const step = () => {
+    const { done, value } = search.next();
+    if (!done) {
+      speedSearch = setTimeout(step, 0);
+      return;
+    }
+    speedSearch = null;
+    const speed = (cmPerS) => formatLength(cmPerS, 'speed');
+    rollSpeedOut.textContent = value.roll === null ? 'Not possible' : speed(value.roll);
+    rockSpeedOut.textContent = value.rock === null ? 'Not possible'
+      : `${speed(value.rock.from).split(' ')[0]} – ${speed(value.rock.to)}`;
+  };
+  speedSearch = setTimeout(step, 0);
+}
+
+function stopSpeedSearch() {
+  clearTimeout(speedSearch);
+  speedSearch = null;
 }
 
 const RIDE_FRAME_SAMPLES = 120;
@@ -351,7 +380,7 @@ function sampleRide(geo, range) {
 /** Back wheel positions with the whole board just off the left of the visible area, and just off the right along the deck. */
 function offCanvasRange(geo, visible) {
   const { wheelbase } = geo.board;
-  const overhang = wheelbase * BOARD_OVERHANG_PER_WHEELBASE;
+  const { overhang } = deckProfile(geo);
   const clearance = wheelbase * 0.1;
   return {
     from: visible.minX - wheelbase - overhang - clearance,
@@ -534,9 +563,9 @@ const BOARD_VIEW_PADDING = 16;
 /** World bounds that fit the top of the ramp, the coping and the board at every one of the given poses. */
 function boardViewBounds(geo, framePoses) {
   const { wheelbase, deckUndersideHeight } = geo.board;
-  const overhang = wheelbase * BOARD_OVERHANG_PER_WHEELBASE;
+  const { overhang, kickRise } = deckProfile(geo);
   const boardPoints = framePoses.flatMap((p) => {
-    const top = mul(p.v, deckUndersideHeight + BOARD_THICKNESS_CM);
+    const top = mul(p.v, deckUndersideHeight + BOARD_THICKNESS_CM + kickRise);
     return [add(p.back, mul(p.u, -overhang)), add(p.back, mul(p.u, wheelbase + overhang))]
       .flatMap((end) => [end, add(end, top)]);
   });
@@ -665,10 +694,36 @@ function drawCoping(geo, vp) {
 
 // Clearance between a truck's axle and the coping for the low and high positions, roughly half a baseplate.
 const TRUCK_CLEARANCE_CM = 3;
-// Illustrative board proportions, relative to the wheelbase and deck underside height entered.
-const BOARD_OVERHANG_PER_WHEELBASE = 0.64;
+// Illustrative board proportions
 const WHEEL_RADIUS_PER_DECK_UNDERSIDE_HEIGHT = 0.33;
 const BOARD_THICKNESS_CM = 1.2;
+// The nose and tail start to curve up this far past each axle, about the end of the truck's baseplate, and finish
+// at this angle.
+const KICK_START_PAST_AXLE_CM = 6.35;
+const KICK_ANGLE_RAD = (22 * Math.PI) / 180;
+
+/**
+ * The shape of the deck along its length: how far it reaches past each axle (half of the deck length beyond the
+ * wheelbase, measured end to end across the kicks), how much of that is flat, and the length and rise of the kicks.
+ */
+function deckProfile(geo) {
+  const { wheelbase, deckLength } = geo.board;
+  const overhang = Math.max(0, (deckLength - wheelbase) / 2);
+  const flat = Math.min(overhang, KICK_START_PAST_AXLE_CM);
+  const kickLength = overhang - flat;
+  return { overhang, flat, kickLength, kickRise: (kickLength * Math.tan(KICK_ANGLE_RAD)) / 2 };
+}
+
+/**
+ * How far the deck has risen above its flat at a point along the board, measured from the back axle. The nose and
+ * tail curve up smoothly from flat to the kick angle at the ends.
+ */
+function deckRiseAt(geo, along) {
+  const { flat, kickLength, kickRise } = deckProfile(geo);
+  const pastAxle = along < 0 ? -along : along - geo.board.wheelbase;
+  if (pastAxle <= flat || kickLength === 0) return 0;
+  return kickRise * Math.min(1, (pastAxle - flat) / kickLength) ** 2;
+}
 
 /**
  * Point on the riding surface at distance s along it from the bottom of the transition. Before the bottom it
@@ -687,17 +742,6 @@ function surfacePoint({ radius, angleRad, vertHeight, surfaceLength, groundLengt
     return { x: radius, y: radius + Math.min(s - arcLength, vertHeight) };
   }
   return { x: groundLength + (s - surfaceLength), y: height };
-}
-
-function isInsideRamp({ radius, groundLength, height }, p) {
-  const tolerance = 1e-6;
-  if (p.x <= 0 || p.y <= 0) return false;
-  // Points on a vertical section's face are on the surface, not inside.
-  if (p.x <= groundLength + tolerance) {
-    const x = Math.min(p.x, radius);
-    return p.y < radius - Math.sqrt(radius * radius - x * x) - tolerance;
-  }
-  return p.y < height - tolerance;
 }
 
 /** Finds where f changes sign between lo and hi by bisection, or null if it doesn't. */
@@ -730,44 +774,117 @@ function boardPose(back, u, wheelbase) {
 }
 
 /**
- * Places the board going up the ramp with its back wheels on the transition. Its other support is the
- * underside of the deck resting on the coping, unless that would put the front wheels through the deck,
- * in which case the front wheels rest on the deck. The position sets how far along the board, from the
- * back truck, the coping sits. The pose includes s, the back wheels' distance along the surface. Returns null
- * when the board can't sit there.
+ * The still positions: which wheels the board rests on, and how far along the board, from the back axle, the deck
+ * rests on the coping.
+ */
+function positionSupport(geo, position) {
+  const { wheelbase } = geo.board;
+  const copingRadius = geo.coping.diameter / 2;
+  return {
+    low: { wheels: 'back', alongBoard: wheelbase - copingRadius - TRUCK_CLEARANCE_CM },
+    'middle-ramp': { wheels: 'back', alongBoard: wheelbase / 2 },
+    'middle-deck': { wheels: 'front', alongBoard: wheelbase / 2 },
+    high: { wheels: 'front', alongBoard: copingRadius + TRUCK_CLEARANCE_CM },
+  }[position];
+}
+
+/**
+ * Centre of a wheel resting on the ramp, a wheel's radius off the surface, at distance s along the surface from the
+ * bottom of the transition: around the curve, then up any vert.
+ */
+function axleOnRamp(geo, s, wheelRadius) {
+  const arcLength = geo.radius * geo.angleRad;
+  if (s <= arcLength || geo.vertHeight === 0) {
+    const phi = Math.min(s, arcLength) / geo.radius;
+    return { x: (geo.radius - wheelRadius) * Math.sin(phi), y: geo.radius - (geo.radius - wheelRadius) * Math.cos(phi) };
+  }
+  return { x: geo.groundLength - wheelRadius, y: geo.radius + Math.min(s - arcLength, geo.vertHeight) };
+}
+
+/** Whether a wheel centred here is clear of the ground, ramp, deck and coping. */
+function wheelClear(geo, axle, wheelRadius) {
+  const tolerance = 1e-6;
+  const coping = copingCentre(geo);
+  if (len(sub(axle, coping)) < wheelRadius + geo.coping.diameter / 2 - tolerance) return false;
+  if (axle.x <= 0) return axle.y >= wheelRadius - tolerance;
+  if (axle.x < geo.groundLength) {
+    // In front of any vert, the wall is the surface; below it, the curve.
+    if (geo.vertHeight > 0 && axle.y > geo.radius) return axle.x <= geo.groundLength - wheelRadius + tolerance;
+    return len(sub(axle, geo.centre)) <= geo.radius - wheelRadius + tolerance && axle.y >= wheelRadius - tolerance;
+  }
+  return axle.y >= geo.height + wheelRadius - tolerance;
+}
+
+/**
+ * Places the board in one of the still positions. It rests on one set of wheels (the back wheels on the ramp, or the
+ * front wheels on the deck) and on the coping under the deck, at the position's distance along the board. If the
+ * other wheels would then go into the ramp or the deck, they rest on it instead, with both sets of wheels down.
+ * Wheels sit a wheel's radius off the surface they rest on. The pose includes s, the back wheels' distance along the
+ * ramp, when they're on it. Returns null when the board can't sit there.
  */
 function placeBoard(geo) {
   const { wheelbase, deckUndersideHeight, position } = geo.board;
+  const wheelRadius = deckUndersideHeight * WHEEL_RADIUS_PER_DECK_UNDERSIDE_HEIGHT;
+  const coping = copingCentre(geo);
   const copingRadius = geo.coping.diameter / 2;
-  const copingPos = copingCentre(geo);
-  const alongBoard = {
-    low: wheelbase - copingRadius - TRUCK_CLEARANCE_CM,
-    middle: wheelbase / 2,
-    high: copingRadius + TRUCK_CLEARANCE_CM,
-  }[position];
+  const { wheels, alongBoard } = positionSupport(geo, position);
+  // In the board's frame, from an axle: the coping centre sits copingRadius below the deck's underside.
+  const across = deckUndersideHeight - wheelRadius - copingRadius;
+  const deckAxleHeight = geo.height + wheelRadius;
+  const sMax = geo.radius * geo.angleRad + geo.vertHeight;
 
-  // Resting on the coping: in the board's frame the coping centre sits at (alongBoard, deckUndersideHeight - copingRadius)
-  // from the back wheel contact, so the contact must be that far from the coping centre.
-  const across = deckUndersideHeight - copingRadius;
-  const reach = Math.hypot(alongBoard, across);
-  const sBack = bisect((s) => len(sub(copingPos, surfacePoint(geo, s))) - reach, 0, geo.surfaceLength);
-  if (sBack !== null) {
-    const back = surfacePoint(geo, sBack);
-    const toCoping = sub(copingPos, back);
-    const angle = Math.atan2(toCoping.y, toCoping.x) - Math.atan2(across, alongBoard);
-    const pose = boardPose(back, { x: Math.cos(angle), y: Math.sin(angle) }, wheelbase);
-    if (!isInsideRamp(geo, pose.front)) return { ...pose, s: sBack };
+  // Pose from the back axle and the board's direction, with the contact point a wheel's radius below the axle.
+  const poseFrom = (backAxle, u, sBack = null) => {
+    const v = { x: -u.y, y: u.x };
+    return { ...boardPose(sub(backAxle, mul(v, wheelRadius)), u, wheelbase), s: sBack };
+  };
+  const direction = (angle) => ({ x: Math.cos(angle), y: Math.sin(angle) });
+
+  // Resting on the given wheels and the coping.
+  let pose = null;
+  if (wheels === 'back') {
+    const reach = Math.hypot(alongBoard, across);
+    const sBack = bisect((sAt) => len(sub(coping, axleOnRamp(geo, sAt, wheelRadius))) - reach, 0, sMax);
+    if (sBack !== null) {
+      const backAxle = axleOnRamp(geo, sBack, wheelRadius);
+      const toCoping = sub(coping, backAxle);
+      const u = direction(Math.atan2(toCoping.y, toCoping.x) - Math.atan2(across, alongBoard));
+      if (wheelClear(geo, add(backAxle, mul(u, wheelbase)), wheelRadius)) pose = poseFrom(backAxle, u, sBack);
+    }
+  } else {
+    const reach = Math.hypot(alongBoard - wheelbase, across);
+    const rise = deckAxleHeight - coping.y;
+    if (reach > Math.abs(rise)) {
+      const frontAxle = { x: coping.x + Math.sqrt(reach * reach - rise * rise), y: deckAxleHeight };
+      const toCoping = sub(coping, frontAxle);
+      const u = direction(Math.atan2(toCoping.y, toCoping.x) - Math.atan2(across, alongBoard - wheelbase));
+      const backAxle = sub(frontAxle, mul(u, wheelbase));
+      if (wheelClear(geo, backAxle, wheelRadius)) pose = poseFrom(backAxle, u);
+    }
   }
+  if (pose) return pose;
 
-  // Both sets of wheels on the surface, with the coping at the required distance along the board.
-  const sWheels = bisect((s) => {
-    const pose = poseOnWheels(geo, s);
-    return pose ? dot(sub(copingPos, pose.back), pose.u) - alongBoard : NaN;
-  }, 0, geo.surfaceLength);
-  if (sWheels === null) return null;
-  const pose = poseOnWheels(geo, sWheels);
+  // Both sets of wheels down: back wheels on the ramp, front wheels on the deck, with the coping at the position's
+  // distance along the board.
+  const onBoth = (sAt) => {
+    const backAxle = axleOnRamp(geo, sAt, wheelRadius);
+    const rise = deckAxleHeight - backAxle.y;
+    if (Math.abs(rise) > wheelbase + 1e-6) return null;
+    const frontAxle = { x: backAxle.x + Math.sqrt(Math.max(0, wheelbase * wheelbase - rise * rise)), y: deckAxleHeight };
+    return { backAxle, u: mul(sub(frontAxle, backAxle), 1 / wheelbase) };
+  };
+  // Only where the back wheels are close enough below the deck for the front wheels to reach it.
+  const sReach = bisect((sAt) => axleOnRamp(geo, sAt, wheelRadius).y - (deckAxleHeight - wheelbase), 0, sMax) ?? 0;
+  const sBoth = onBoth(sReach) && bisect((sAt) => {
+    const both = onBoth(sAt);
+    return dot(sub(coping, both.backAxle), both.u) - alongBoard;
+  }, sReach, sMax);
+  const both = sBoth ? onBoth(sBoth) : null;
+  if (!both) return null;
+  const v = { x: -both.u.y, y: both.u.x };
   // The deck mustn't pass through the coping.
-  return pose && dot(sub(copingPos, pose.back), pose.v) <= across + 1e-6 ? { ...pose, s: sWheels } : null;
+  if (dot(sub(coping, both.backAxle), v) > across + 1e-6) return null;
+  return poseFrom(both.backAxle, both.u, sBoth);
 }
 
 /** Board pose with its back wheels at distance s along the surface and its front wheels also on the surface. */
@@ -805,7 +922,7 @@ function rideRange(geo) {
   const { wheelbase } = geo.board;
   const copingBack = copingCentre(geo).x + geo.coping.diameter / 2 - geo.groundLength;
   return {
-    from: -wheelbase * (1 + BOARD_OVERHANG_PER_WHEELBASE),
+    from: -(wheelbase + deckProfile(geo).overhang),
     to: geo.surfaceLength + Math.max(0, copingBack) + wheelbase * 0.3,
   };
 }
@@ -831,7 +948,7 @@ function ridePose(geo, s) {
 function drawBoard(geo, pose, vp) {
   const { wheelbase, deckUndersideHeight } = geo.board;
   const wheelRadius = deckUndersideHeight * WHEEL_RADIUS_PER_DECK_UNDERSIDE_HEIGHT;
-  const overhang = wheelbase * BOARD_OVERHANG_PER_WHEELBASE;
+  const { overhang } = deckProfile(geo);
   const { u, v } = pose;
   const deckAt = (along, up) => toPx(vp, add(add(pose.back, mul(u, along)), mul(v, deckUndersideHeight + up)));
 
@@ -862,15 +979,14 @@ function drawBoard(geo, pose, vp) {
     ctx.stroke();
   }
 
-  // Deck
-  const corners = [
-    deckAt(-overhang, 0),
-    deckAt(wheelbase + overhang, 0),
-    deckAt(wheelbase + overhang, BOARD_THICKNESS_CM),
-    deckAt(-overhang, BOARD_THICKNESS_CM),
-  ];
+  // Deck, tail to nose along the underside and back along the top, curving up into the kicks
+  const samples = 60;
+  const alongAt = (i) => -overhang + ((wheelbase + overhang * 2) * i) / samples;
+  const outline = [];
+  for (let i = 0; i <= samples; i++) outline.push(deckAt(alongAt(i), deckRiseAt(geo, alongAt(i))));
+  for (let i = samples; i >= 0; i--) outline.push(deckAt(alongAt(i), deckRiseAt(geo, alongAt(i)) + BOARD_THICKNESS_CM));
   ctx.beginPath();
-  corners.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
+  outline.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
   ctx.closePath();
   ctx.fillStyle = COLOURS.boardDeck;
   ctx.fill();
@@ -897,7 +1013,7 @@ function drawRider(geo, pose, vp) {
   ctx.save();
   ctx.fillStyle = COLOURS.rider;
   for (const foot of [{ along: backFoot, load: loads.back }, { along: frontFoot, load: loads.front }]) {
-    const p = toPx(vp, add(add(pose.back, mul(pose.u, foot.along)), mul(pose.v, deckTop)));
+    const p = toPx(vp, add(add(pose.back, mul(pose.u, foot.along)), mul(pose.v, deckTop + deckRiseAt(geo, foot.along))));
     // Flat side on the deck
     ctx.beginPath();
     ctx.arc(p.x, p.y, footRadius, boardAngle + Math.PI, boardAngle);
@@ -1118,7 +1234,8 @@ function drawLabel(text, x, y, colour, align, withBackground = false) {
 }
 
 for (const input of [
-  heightInput, radiusInput, copingInput, copingAboveDeckInput, copingFromRampInput, wheelbaseInput, boardHeightInput,
+  heightInput, radiusInput, copingInput, copingAboveDeckInput, copingFromRampInput, wheelbaseInput, deckLengthInput,
+  boardHeightInput,
   speedInput, riderMassInput, frontShareInput,
 ]) {
   input.addEventListener('input', update);

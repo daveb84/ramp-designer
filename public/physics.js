@@ -22,10 +22,10 @@ const TRUCK_MASS_KG = 0.9;
 const DECK_FRICTION = 0.15;
 // Where the back foot stands, behind the back axle, as a fraction of the tail's length.
 const BACK_FOOT_TAIL_FRACTION = 0.5;
-// How close the front wheels get to the coping before the rider kicks the nose up over it.
-const ROCK_LIFT_LEAD_CM = 8;
+// If the front wheels are against the coping and the board slows below this, the rider kicks the nose up over it.
+const ROCK_CATCH_SPEED_CM_PER_S = 60;
 // How long the board stays on the coping before the rider kicks back off it.
-const ROCK_STALL_S = 0.3;
+const ROCK_STALL_S = 0.5;
 // If the board is still this slow this long after kicking back off the coping, the rider kicks again.
 const ROCK_RETRY_S = 0.35;
 const ROCK_STUCK_SPEED_CM_PER_S = 20;
@@ -41,9 +41,7 @@ const vecCm = (p) => ({ x: p.x * 100, y: p.y * 100 });
 
 /** Foot positions along the board, in cm from the back axle. */
 function footPositions(geo) {
-  const { wheelbase } = geo.board;
-  const overhang = wheelbase * BOARD_OVERHANG_PER_WHEELBASE;
-  return { backFoot: -overhang * BACK_FOOT_TAIL_FRACTION, frontFoot: wheelbase };
+  return { backFoot: -deckProfile(geo).overhang * BACK_FOOT_TAIL_FRACTION, frontFoot: geo.board.wheelbase };
 }
 
 /**
@@ -100,12 +98,37 @@ function addRamp(geo, body, runOut) {
 }
 
 /**
+ * Adds the deck to the board's body, with its origin in the middle of the deck: a flat section between the kicks,
+ * and the nose and tail each as a few straight pieces following their curve, so they can strike the ramp.
+ */
+function addDeckShape(geo, deck) {
+  const { wheelbase } = geo.board;
+  const { flat, kickLength } = deckProfile(geo);
+  const halfThickness = BOARD_THICKNESS_CM / 2;
+  const kickPieces = kickLength > 0 ? 4 : 0;
+  const totalArea = toM(wheelbase + flat * 2 + kickLength * 2) * toM(BOARD_THICKNESS_CM);
+  const fixture = (shape) => deck.createFixture(shape, { density: DECK_MASS_KG / totalArea, friction: DECK_FRICTION });
+
+  fixture(new planck.Box(toM(wheelbase / 2 + flat), toM(halfThickness)));
+  // In the body's frame, from the middle of the deck.
+  const point = (along) => ({ x: along - wheelbase / 2, y: deckRiseAt(geo, along) - halfThickness });
+  for (const side of [-1, 1]) {
+    const axle = side < 0 ? 0 : wheelbase;
+    for (let i = 0; i < kickPieces; i++) {
+      const a = point(axle + side * (flat + (kickLength * i) / kickPieces));
+      const b = point(axle + side * (flat + (kickLength * (i + 1)) / kickPieces));
+      const corners = [a, b, { x: b.x, y: b.y + BOARD_THICKNESS_CM }, { x: a.x, y: a.y + BOARD_THICKNESS_CM }];
+      fixture(new planck.Polygon((side < 0 ? corners.reverse() : corners).map(vecM)));
+    }
+  }
+}
+
+/**
  * Builds the world with the board at the given starting pose. Returns the bodies and a function to change how the
  * rider's weight is split between the feet.
  */
 function buildWorld(geo, startPose) {
   const { wheelbase, deckUndersideHeight, riderMass } = geo.board;
-  const overhang = wheelbase * BOARD_OVERHANG_PER_WHEELBASE;
   const wheelRadius = deckUndersideHeight * WHEEL_RADIUS_PER_DECK_UNDERSIDE_HEIGHT;
   const world = new planck.World({ gravity: planck.Vec2(0, -9.81) });
 
@@ -116,31 +139,26 @@ function buildWorld(geo, startPose) {
   const onBoard = (along, up) => add(add(startPose.back, mul(u, along)), mul(v, up));
 
   // The body's origin is the middle of the deck, half way between the axles.
-  const deckLength = wheelbase + overhang * 2;
   const deck = world.createBody({
     type: 'dynamic',
     position: vecM(onBoard(wheelbase / 2, deckUndersideHeight + BOARD_THICKNESS_CM / 2)),
     angle: Math.atan2(u.y, u.x),
   });
-  deck.createFixture(new planck.Box(toM(deckLength / 2), toM(BOARD_THICKNESS_CM / 2)), {
-    density: DECK_MASS_KG / (toM(deckLength) * toM(BOARD_THICKNESS_CM)),
-    friction: DECK_FRICTION,
-  });
+  addDeckShape(geo, deck);
 
   // The feet carry the rider's weight but don't collide with anything.
   const feet = footPositions(geo);
   const footRadiusM = 0.02;
   const footArea = Math.PI * footRadiusM * footRadiusM;
-  const foot = (along) => deck.createFixture(
-    new planck.Circle(planck.Vec2(toM(along - wheelbase / 2), toM(BOARD_THICKNESS_CM / 2)), footRadiusM),
-    { density: 0, filterMaskBits: 0 },
-  );
+  // On top of the deck, which is higher where a foot is on a kick.
+  const footLocal = (along) => planck.Vec2(toM(along - wheelbase / 2), toM(BOARD_THICKNESS_CM / 2 + deckRiseAt(geo, along)));
+  const foot = (along) => deck.createFixture(new planck.Circle(footLocal(along), footRadiusM), {
+    density: 0,
+    filterMaskBits: 0,
+  });
   const frontFoot = foot(feet.frontFoot);
   const backFoot = foot(feet.backFoot);
-  const footPoints = {
-    front: planck.Vec2(toM(feet.frontFoot - wheelbase / 2), toM(BOARD_THICKNESS_CM / 2)),
-    back: planck.Vec2(toM(feet.backFoot - wheelbase / 2), toM(BOARD_THICKNESS_CM / 2)),
-  };
+  const footPoints = { front: footLocal(feet.frontFoot), back: footLocal(feet.backFoot) };
   let frontShare = 0.5;
   const setFrontShare = (share) => {
     frontFoot.setDensity((riderMass * share) / footArea);
@@ -303,13 +321,26 @@ const ROCK_ACTIONS = {
 };
 
 /**
- * Rolls in, then the rider: kicks the tail as the front wheels near the coping to flick the nose up over it, moves
- * their weight forward once the front truck is past to set it down on the deck with the board resting on the coping,
- * holds it there for a moment, then kicks the tail again to lift the front wheels back over and rolls away fakie,
- * kicking again if the front wheels catch on the coping.
+ * Rolls in and up over the coping, kicking the tail to lift the nose over only if the front wheels catch on it. Once
+ * the front truck is past, the rider moves their weight forward to set it down on the deck with the board resting on
+ * the coping, holds it there for a moment, then kicks the tail to lift the front wheels back over and rolls away
+ * fakie, kicking again if the front wheels catch on the coping.
  * How far over the coping the board gets depends on the speed.
  */
 function physicsRockToFakieTimeline(geo, range) {
+  const { poses, outcome } = simulateRockToFakie(geo, range);
+  const notes = {
+    short: 'Not fast enough to reach the coping for a rock to fakie.',
+    over: 'Too fast for a rock to fakie: the board went right over onto the deck.',
+  };
+  return timelineFromPoses([...poses, ...holdLast(poses, END_HOLD_S)], notes[outcome] ?? null);
+}
+
+/**
+ * Simulates the rock to fakie described above. The outcome is 'rock' when it works, 'short' when the board doesn't
+ * reach the coping, and 'over' when it goes right over onto the deck.
+ */
+function simulateRockToFakie(geo, range) {
   const coping = copingCentre(geo);
   const copingRadius = geo.coping.diameter / 2;
   const wheelRadius = geo.board.deckUndersideHeight * WHEEL_RADIUS_PER_DECK_UNDERSIDE_HEIGHT;
@@ -331,11 +362,13 @@ function physicsRockToFakieTimeline(geo, range) {
       rolledOnto = true;
       setFrontShare(geo.board.frontShare);
       say('Went right over onto the deck');
-    } else if (phase === 'approach' && len(sub(frontAxle, coping)) < wheelRadius + copingRadius + ROCK_LIFT_LEAD_CM) {
+    } else if (phase === 'approach' && !frontPastCoping && alongBoard > 0 && alongBoard < ROCK_CATCH_SPEED_CM_PER_S
+      && len(sub(frontAxle, coping)) < wheelRadius + copingRadius + 1) {
+      // The front wheels are catching on the face of the coping: kick the nose up over it.
       enter('lift');
       setFrontShare(0.3);
       kick(LIFT_KICK);
-    } else if (phase === 'lift' && frontPastCoping) {
+    } else if ((phase === 'approach' || phase === 'lift') && frontPastCoping) {
       enter('place');
       reachedCoping = true;
       setFrontShare(0.85);
@@ -355,8 +388,61 @@ function physicsRockToFakieTimeline(geo, range) {
       setFrontShare(geo.board.frontShare);
     }
   });
-  let note = null;
-  if (!reachedCoping) note = 'Not fast enough to reach the coping for a rock to fakie.';
-  if (rolledOnto) note = 'Too fast for a rock to fakie: the board went right over onto the deck.';
-  return timelineFromPoses([...poses, ...holdLast(poses, END_HOLD_S)], note);
+  let outcome = 'rock';
+  if (!reachedCoping) outcome = 'short';
+  if (rolledOnto) outcome = 'over';
+  return { poses, outcome };
+}
+
+// The fastest starting speed the speed searches try, in cm/s (about 45 mph).
+const SEARCH_MAX_SPEED_CM_PER_S = 2000;
+// How closely the speed searches pin down a speed, in cm/s (about 0.05 mph).
+const SEARCH_PRECISION_CM_PER_S = 2;
+
+/** The board at the given starting speed, starting on the flat in front of the ramp. */
+function atSpeed(geo, speed) {
+  return { ...geo, board: { ...geo.board, speed } };
+}
+
+/** Whether the board, simply rolling in at this starting speed, ends up on the deck. */
+function rollReachesDeck(geo, speed) {
+  const poses = simulateBoard(atSpeed(geo, speed), rideRange(geo));
+  return poses[poses.length - 1].back.x > geo.groundLength;
+}
+
+/**
+ * Finds where a yes/no answer about the starting speed changes, between a speed where it's no and one where it's
+ * yes, by halving the gap. A generator, so the caller can run one simulation at a time and keep the page responsive;
+ * it returns the speed at which the answer becomes yes.
+ */
+function* searchSpeed(answer, no, yes) {
+  while (Math.abs(yes - no) > SEARCH_PRECISION_CM_PER_S) {
+    const middle = (no + yes) / 2;
+    if (answer(middle)) yes = middle; else no = middle;
+    yield;
+  }
+  return yes;
+}
+
+/**
+ * Works out, by simulating, the lowest starting speed that rolls onto the deck, and the range of starting speeds for
+ * which the rock to fakie works. Null where there isn't one within SEARCH_MAX_SPEED_CM_PER_S. A generator that
+ * yields after each simulation; its result is { roll, rock: { from, to } }.
+ */
+function* speedsNeeded(geo) {
+  const max = SEARCH_MAX_SPEED_CM_PER_S;
+  const roll = rollReachesDeck(geo, max) ? yield* searchSpeed((speed) => rollReachesDeck(geo, speed), 0, max) : null;
+  yield;
+
+  const rockOutcome = (speed) => simulateRockToFakie(atSpeed(geo, speed), rideRange(geo)).outcome;
+  // Lowest speed that gets past falling short, then the lowest speed from there that goes right over.
+  if (rockOutcome(max) === 'short') return { roll, rock: null };
+  yield;
+  const reaches = yield* searchSpeed((speed) => rockOutcome(speed) !== 'short', 0, max);
+  if (rockOutcome(reaches) !== 'rock') return { roll, rock: null };
+  yield;
+  const goesOver = rockOutcome(max) === 'over'
+    ? yield* searchSpeed((speed) => rockOutcome(speed) === 'over', reaches, max)
+    : null;
+  return { roll, rock: { from: reaches, to: goesOver === null ? max : goesOver - SEARCH_PRECISION_CM_PER_S } };
 }

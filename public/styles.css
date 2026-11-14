@@ -42,6 +42,14 @@ form {
 
 .form-row[hidden] { display: none; }
 
+.form-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.form-rows[hidden] { display: none; }
+
 .form-row {
   display: flex;
   flex-wrap: wrap;

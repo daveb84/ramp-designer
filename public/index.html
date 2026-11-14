@@ -8,7 +8,7 @@
 </head>
 <body>
   <header>
-    <h1>Quarter Pipe Designer</h1>
+    <h1>Ramp Designer</h1>
   </header>
 
   <main>
@@ -94,20 +94,41 @@
     <form autocomplete="off">
       <div class="form-row">
         <fieldset class="units">
+          <legend>Length units</legend>
+          <label class="radio"><input type="radio" name="wheelbase-units" value="cm"> cm</label>
+          <label class="radio"><input type="radio" name="wheelbase-units" value="in" checked> in</label>
+        </fieldset>
+        <label>
+          <span>Deck length, nose to tail (<span class="wheelbase-unit-name">in</span>)</span>
+          <input id="deck-length" type="number" min="0" step="any" value="31" required>
+        </label>
+        <label>
+          <span>Skateboard wheelbase (<span class="wheelbase-unit-name">in</span>)</span>
+          <input id="wheelbase" type="number" min="0" step="any" value="14" required>
+        </label>
+        <fieldset class="units">
+          <legend>Deck underside units</legend>
+          <label class="radio"><input type="radio" name="board-height-units" value="mm"> mm</label>
+          <label class="radio"><input type="radio" name="board-height-units" value="in" checked> in</label>
+        </fieldset>
+        <label>
+          <span>Height of deck underside above ground (<span class="board-height-unit-name">in</span>)</span>
+          <input id="board-height" type="number" min="0" step="any" value="3" required>
+        </label>
+      </div>
+      <div class="form-row">
+        <fieldset class="units">
           <legend>Skateboard position</legend>
           <label class="radio"><input type="radio" name="board-position" value="none"> None</label>
           <label class="radio"><input type="radio" name="board-position" value="low"> Low</label>
-          <label class="radio"><input type="radio" name="board-position" value="middle" checked> Middle</label>
+          <label class="radio"><input type="radio" name="board-position" value="middle-ramp" checked> Middle - ramp</label>
+          <label class="radio"><input type="radio" name="board-position" value="middle-deck"> Middle - deck</label>
           <label class="radio"><input type="radio" name="board-position" value="high"> High</label>
           <label class="radio"><input type="radio" name="board-position" value="animation"> Animation</label>
         </fieldset>
       </div>
-      <div class="form-row" id="animation-controls" hidden>
-        <fieldset class="units">
-          <legend>Trick</legend>
-          <label class="radio"><input type="radio" name="trick" value="roll" checked> Roll</label>
-          <label class="radio"><input type="radio" name="trick" value="rock-to-fakie"> Rock to fakie</label>
-        </fieldset>
+      <div class="form-rows" id="animation-controls" hidden>
+      <div class="form-row">
         <fieldset class="units">
           <legend>Speed units</legend>
           <label class="radio"><input type="radio" name="speed-units" value="km/h"> km/h</label>
@@ -126,30 +147,18 @@
           <span>Rider weight (<span class="rider-mass-unit-name">kg</span>)</span>
           <input id="rider-mass" type="number" min="0" step="any" value="70" required>
         </label>
+      </div>
+      <div class="form-row">
+        <fieldset class="units">
+          <legend>Trick</legend>
+          <label class="radio"><input type="radio" name="trick" value="roll" checked> Roll</label>
+          <label class="radio"><input type="radio" name="trick" value="rock-to-fakie"> Rock to fakie</label>
+        </fieldset>
         <label>
           <span>Weight on front foot (%)</span>
           <input id="front-share" type="number" min="0" max="100" step="any" value="50" required>
         </label>
       </div>
-      <div class="form-row">
-        <fieldset class="units">
-          <legend>Wheelbase units</legend>
-          <label class="radio"><input type="radio" name="wheelbase-units" value="cm"> cm</label>
-          <label class="radio"><input type="radio" name="wheelbase-units" value="in" checked> in</label>
-        </fieldset>
-        <label>
-          <span>Skateboard wheelbase (<span class="wheelbase-unit-name">in</span>)</span>
-          <input id="wheelbase" type="number" min="0" step="any" value="14" required>
-        </label>
-        <fieldset class="units">
-          <legend>Deck underside units</legend>
-          <label class="radio"><input type="radio" name="board-height-units" value="mm"> mm</label>
-          <label class="radio"><input type="radio" name="board-height-units" value="in" checked> in</label>
-        </fieldset>
-        <label>
-          <span>Height of deck underside above ground (<span class="board-height-unit-name">in</span>)</span>
-          <input id="board-height" type="number" min="0" step="any" value="3" required>
-        </label>
       </div>
     </form>
 
