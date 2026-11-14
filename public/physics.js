@@ -324,6 +324,7 @@ function simulateBoard(geo, range, riderScript) {
     }
     riderScript?.({
       t, pose, velocity,
+      onSomething: touchingAnything(sim.deck),
       setFrontShare: sim.setFrontShare,
       frontShare: sim.getFrontShare(),
       kick: (parts) => startKick(parts, t),
@@ -390,9 +391,10 @@ function kickParts(move, frontShare) {
 /**
  * Rolls in at the starting speed, with the rider making the moves set out in the table in order, each once the one
  * before it has happened. A move happens a delay after its moment comes: the front wheels at or past a point while
- * going up, the board coming to a stop, or the front wheels back at or below a point while coming down. A move can
- * shift the rider's weight between the feet and kick. With no moves the rider just balances. When there are moves, a
- * note says if the front truck didn't get over the coping, or the whole board went over onto the deck.
+ * going up, the board coming to a stop on the ramp or the coping, or the front wheels back at or below a point while
+ * coming down. A move can shift the rider's weight between the feet and kick. With no moves the rider just balances.
+ * When there are moves, a note says if the front truck didn't get over the coping, or the whole board went over onto
+ * the deck.
  */
 function physicsMovesTimeline(geo, range) {
   const { poses, outcome } = simulateMoves(geo, range);
@@ -419,12 +421,13 @@ function simulateMoves(geo, range) {
   let reachedCoping = false;
   let rolledOnto = false;
 
-  const poses = simulateBoard(geo, range, ({ t, pose, velocity, setFrontShare, frontShare, kick, say }) => {
+  const poses = simulateBoard(geo, range, ({ t, pose, velocity, onSomething, setFrontShare, frontShare, kick, say }) => {
     const progress = frontProgress(geo, pose);
     const alongBoard = dot(velocity, pose.u);
     const movingUp = alongBoard > STOPPED_SPEED_CM_PER_S;
     const movingDown = alongBoard < -STOPPED_SPEED_CM_PER_S;
-    const stopped = wasMovingUp && alongBoard <= STOPPED_SPEED_CM_PER_S;
+    // Stopped on the ramp or the coping: not the moment the board hangs still at the top of a flight through the air.
+    const stopped = wasMovingUp && onSomething && alongBoard <= STOPPED_SPEED_CM_PER_S;
     if (movingUp) wasMovingUp = true;
 
     const frontAxle = add(pose.front, mul(pose.v, wheelRadius));

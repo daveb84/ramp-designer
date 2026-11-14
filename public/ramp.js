@@ -12,8 +12,9 @@ const speedInput = document.getElementById('speed');
 const animationControls = document.getElementById('animation-controls');
 const riderMassInput = document.getElementById('rider-mass');
 const playbackInput = document.getElementById('playback');
-const presetSelect = document.getElementById('moves-preset');
-const movesStatus = document.getElementById('moves-status');
+const presetSelect = document.getElementById('page-preset');
+const presetStatus = document.getElementById('preset-status');
+const deletePresetButton = document.getElementById('delete-preset');
 const saveAsPanel = document.getElementById('save-as');
 const saveAsName = document.getElementById('save-as-name');
 const addButton = document.getElementById('add-move');
@@ -47,6 +48,8 @@ const canvas = document.getElementById('ramp-canvas');
 const detailCanvas = document.getElementById('detail-canvas');
 const boardCanvas = document.getElementById('board-canvas');
 const boardView = document.getElementById('board-view');
+const boardControls = document.getElementById('board-controls');
+const pauseButton = document.getElementById('pause-button');
 
 // The context of whichever canvas is being drawn; see useCanvas.
 let ctx;
@@ -195,55 +198,17 @@ function readInputs() {
 
 /*
  * The rider's moves: the changes they make on the way up, at the top and on the way back. They're kept as entered,
- * so a half-typed number isn't lost, and checked when read. A preset fills the table with a trick's moves.
+ * so a half-typed number isn't lost, and checked when read. They start as a rock to fakie.
  */
 const MOVE_TRIGGERS = { up: 'Going up', stop: 'Board stops', down: 'Coming down' };
-const BUILT_IN_PRESETS = {
-  none: [],
-  'rock-to-fakie': [
-    { when: 'up', at: '0', delay: '0', frontWeight: '50', kickBack: '', kickFront: '', kickTime: '' },
-    { when: 'up', at: '105', delay: '0', frontWeight: '85', kickBack: '', kickFront: '', kickTime: '' },
-    { when: 'stop', at: '', delay: '0.5', frontWeight: '15', kickBack: '140', kickFront: '0', kickTime: '0.12' },
-    { when: 'down', at: '90', delay: '0', frontWeight: '50', kickBack: '', kickFront: '', kickTime: '' },
-  ],
-};
-const BUILT_IN_PRESET_NAMES = { none: 'None', 'rock-to-fakie': 'Rock to fakie' };
-const DEFAULT_PRESET = 'rock-to-fakie';
-
-// Saved presets, in this browser's local storage: { [preset id]: { name, moves } }. Ids of presets saved under a new
-// name start "saved:". Storage can be unavailable (a private window, say), when nothing is kept between visits.
-const SAVED_MOVES_KEY = 'ramp-designer.moves';
-function loadSavedPresets() {
-  try {
-    return JSON.parse(localStorage.getItem(SAVED_MOVES_KEY)) ?? {};
-  } catch {
-    return {};
-  }
-}
-function storeSavedPresets(saved) {
-  try {
-    localStorage.setItem(SAVED_MOVES_KEY, JSON.stringify(saved));
-    return true;
-  } catch {
-    return false;
-  }
-}
-let savedPresets = loadSavedPresets();
-
-/** A preset's moves: the saved version if there is one, otherwise the built-in one. */
-const presetMoves = (preset) => (savedPresets[preset]?.moves ?? BUILT_IN_PRESETS[preset] ?? []).map((move) => ({ ...move }));
-const presetName = (preset) => savedPresets[preset]?.name ?? BUILT_IN_PRESET_NAMES[preset] ?? preset;
-
-/** Fills the preset dropdown: the built-in presets, then any saved under a name of their own. */
-function showPresetOptions(selected) {
-  const saved = Object.keys(savedPresets).filter((id) => !(id in BUILT_IN_PRESETS))
-    .sort((a, b) => presetName(a).localeCompare(presetName(b)));
-  presetSelect.replaceChildren(...[...Object.keys(BUILT_IN_PRESETS), ...saved]
-    .map((id) => new Option(presetName(id), id, false, id === selected)));
-  presetSelect.value = selected;
-}
-showPresetOptions(DEFAULT_PRESET);
-let riderMoves = presetMoves(DEFAULT_PRESET);
+const DEFAULT_MOVES = [
+  { when: 'up', at: '0', delay: '0', frontWeight: '50', kickBack: '', kickFront: '', kickTime: '' },
+  { when: 'up', at: '105', delay: '0', frontWeight: '85', kickBack: '', kickFront: '', kickTime: '' },
+  { when: 'stop', at: '', delay: '0.5', frontWeight: '15', kickBack: '140', kickFront: '0', kickTime: '0.12' },
+  { when: 'down', at: '90', delay: '0', frontWeight: '50', kickBack: '', kickFront: '', kickTime: '' },
+];
+const copyMoves = (moves) => moves.map((move) => ({ ...move }));
+let riderMoves = copyMoves(DEFAULT_MOVES);
 
 /** The moves as numbers, with blanks as null, or an error naming the first move that doesn't make sense. */
 function readMoves() {
@@ -428,6 +393,7 @@ function draw(geo) {
   boardView.hidden = false;
   boardNote.hidden = true;
   boardReadout.hidden = position !== 'animation';
+  boardControls.hidden = position !== 'animation';
 
   if (position === 'animation') {
     const bounds = boardViewBounds(geo, sampleRide(geo, rideRange(geo)));
@@ -540,14 +506,25 @@ function playbackRate() {
   return percent >= 1 && percent <= 100 ? percent / 100 : 1;
 }
 
+// Whether the animation is paused. It stays paused when the animation restarts after a change, showing the start.
+let paused = false;
+
+/** Pauses or plays the animation. */
+function setPaused(pause) {
+  paused = pause;
+  pauseButton.textContent = pause ? 'Play' : 'Pause';
+  pauseButton.setAttribute('aria-pressed', String(pause));
+}
+
 function startAnimation(geo, timeline, bounds) {
   let last = performance.now();
   let elapsed = 0;
   animation = { frame: 0 };
 
-  // Reads the playback speed every frame, so changing it carries on from where the animation is.
+  // Reads the playback speed and whether it's paused every frame, so changing either carries on from where the
+  // animation is. While paused it keeps drawing the same moment, so the position marker still shows.
   const step = (now) => {
-    elapsed = (elapsed + (now - last) * playbackRate()) % timeline.durationMs;
+    if (!paused) elapsed = (elapsed + (now - last) * playbackRate()) % timeline.durationMs;
     last = now;
     const progress = elapsed / timeline.durationMs;
     const pose = timeline.poseAt(progress);
@@ -1473,6 +1450,7 @@ document.querySelectorAll('input[name="board-position"]').forEach((radio) => {
   radio.addEventListener('change', update);
 });
 window.addEventListener('resize', update);
+pauseButton.addEventListener('click', () => setPaused(!paused));
 
 // Editing the moves re-runs the ride. The table is only redrawn when rows come or go, so typing keeps its place.
 // While any control in a row has focus, mark that row's "Front wheels at" position on the skateboard canvas.
@@ -1545,22 +1523,155 @@ movesBody.addEventListener('click', (event) => {
 addButton.addEventListener('click', () => addMoveAt(riderMoves.length));
 addAboveButton.addEventListener('click', () => addMoveAt(selectedMove ?? 0));
 addBelowButton.addEventListener('click', () => addMoveAt((selectedMove ?? riderMoves.length - 1) + 1));
-presetSelect.addEventListener('change', () => {
-  riderMoves = presetMoves(presetSelect.value);
+renderMoves();
+
+/*
+ * Presets: everything set on the page (every input, every choice of units, the skateboard position and the rider's
+ * moves), saved in this browser's local storage and loaded again. Values are kept in the units they were entered in,
+ * along with those units, so loading one never converts anything.
+ */
+
+/** The page's form controls, other than the moves table, which is kept separately. */
+function pageControls() {
+  return [...document.querySelectorAll('form input, form select')].filter((control) => !movesBody.contains(control));
+}
+
+/** Everything set on the page, or what it starts with when the page is first opened. */
+function pageState(asFirstOpened = false) {
+  const values = {};
+  const choices = {};
+  for (const control of pageControls()) {
+    if (control.type === 'radio') {
+      if (asFirstOpened ? control.defaultChecked : control.checked) choices[control.name] = control.value;
+    } else if (control.id) {
+      values[control.id] = asFirstOpened ? control.defaultValue : control.value;
+    }
+  }
+  return { values, choices, moves: copyMoves(asFirstOpened ? DEFAULT_MOVES : riderMoves) };
+}
+
+/** Sets everything on the page from a saved state, then redraws. Anything the state doesn't mention is left alone. */
+function applyPageState(state) {
+  for (const control of pageControls()) {
+    if (control.type === 'radio') {
+      if (control.name in state.choices) control.checked = control.value === state.choices[control.name];
+    } else if (control.id in state.values) {
+      control.value = state.values[control.id];
+    }
+  }
+  for (const [group, unitGroup] of Object.entries(UNIT_GROUPS)) {
+    if (unitGroup.radioName in state.choices) unitGroup.current = state.choices[unitGroup.radioName];
+    showUnitLabels(group);
+  }
+  riderMoves = copyMoves(state.moves ?? []);
   renderMoves();
   update();
+}
+
+const BUILT_IN_PRESETS = {
+  default: { name: 'Default', state: () => pageState(true) },
+  roll: {
+    name: 'Roll',
+    state: () => {
+      const firstOpened = pageState(true);
+      return { ...firstOpened, choices: { ...firstOpened.choices, 'board-position': 'animation' }, moves: [] };
+    },
+  },
+  // Lifts the nose over the coping, rocks with the coping under the middle of the board, then lifts back over. Found
+  // by searching the simulation on the page's first-opened ramp, where it works from about 10.4 to 10.8 mph.
+  'rock-on-coping': {
+    name: 'Rock on the coping',
+    state: () => {
+      const firstOpened = pageState(true);
+      return {
+        values: { ...firstOpened.values, speed: '10.5' },
+        choices: { ...firstOpened.choices, 'board-position': 'animation', 'speed-units': 'mph' },
+        moves: [
+          { when: 'up', at: '0', delay: '0', frontWeight: '50', kickBack: '', kickFront: '', kickTime: '' },
+          { when: 'up', at: '94', delay: '0', frontWeight: '30', kickBack: '150', kickFront: '0', kickTime: '0.12' },
+          { when: 'up', at: '108', delay: '0', frontWeight: '85', kickBack: '0', kickFront: '150', kickTime: '0.08' },
+          { when: 'stop', at: '', delay: '0.6', frontWeight: '15', kickBack: '160', kickFront: '0', kickTime: '0.12' },
+          { when: 'down', at: '90', delay: '0', frontWeight: '50', kickBack: '', kickFront: '', kickTime: '' },
+        ],
+      };
+    },
+  },
+};
+
+// Saved presets: { [preset id]: { name, state } }. Ids of presets saved under a new name start "saved:". Storage can
+// be unavailable (a private window, say), when nothing is kept between visits.
+const SAVED_PRESETS_KEY = 'ramp-designer.presets';
+function loadSavedPresets() {
+  try {
+    return JSON.parse(localStorage.getItem(SAVED_PRESETS_KEY)) ?? {};
+  } catch {
+    return {};
+  }
+}
+function storeSavedPresets(saved) {
+  try {
+    localStorage.setItem(SAVED_PRESETS_KEY, JSON.stringify(saved));
+    return true;
+  } catch {
+    return false;
+  }
+}
+let savedPresets = loadSavedPresets();
+
+/** A preset's state: the saved version if there is one, otherwise the built-in one. */
+const presetState = (preset) => savedPresets[preset]?.state ?? BUILT_IN_PRESETS[preset]?.state();
+const presetName = (preset) => savedPresets[preset]?.name ?? BUILT_IN_PRESETS[preset]?.name ?? preset;
+
+/** Fills the preset dropdown: the built-in presets, then any saved under a name of their own. */
+function showPresetOptions(selected) {
+  const saved = Object.keys(savedPresets).filter((id) => !(id in BUILT_IN_PRESETS))
+    .sort((a, b) => presetName(a).localeCompare(presetName(b)));
+  presetSelect.replaceChildren(...[...Object.keys(BUILT_IN_PRESETS), ...saved]
+    .map((id) => new Option(presetName(id), id, false, id === selected)));
+  presetSelect.value = selected;
+  // Only a preset you've saved can be deleted.
+  deletePresetButton.disabled = !(selected in savedPresets);
+}
+
+presetSelect.addEventListener('change', () => {
+  deletePresetButton.disabled = !(presetSelect.value in savedPresets);
+  applyPageState(presetState(presetSelect.value));
 });
 
-/** Saves the moves as entered under a preset, and says so. */
-function saveMoves(preset, name) {
-  savedPresets = { ...savedPresets, [preset]: { name, moves: riderMoves.map((move) => ({ ...move })) } };
+/** Shows a message by the presets for a few seconds. */
+function showPresetStatus(message) {
+  presetStatus.textContent = message;
+  clearTimeout(showPresetStatus.timer);
+  showPresetStatus.timer = setTimeout(() => { presetStatus.textContent = ''; }, 3000);
+}
+
+/** Saves everything on the page under a preset, and says so. */
+function savePreset(preset, name) {
+  savedPresets = { ...savedPresets, [preset]: { name, state: pageState() } };
   const stored = storeSavedPresets(savedPresets);
   showPresetOptions(preset);
-  movesStatus.textContent = stored ? `Saved as "${name}"` : "Couldn't save: this browser isn't keeping data for the page";
-  clearTimeout(saveMoves.timer);
-  saveMoves.timer = setTimeout(() => { movesStatus.textContent = ''; }, 3000);
+  showPresetStatus(stored ? `Saved as "${name}"` : "Couldn't save: this browser isn't keeping data for the page");
 }
-document.getElementById('save-moves').addEventListener('click', () => saveMoves(presetSelect.value, presetName(presetSelect.value)));
+
+/**
+ * Deletes the saved version of the selected preset, once confirmed. A built-in preset goes back to its own values; one
+ * saved under a name of its own goes, and the page switches to Default.
+ */
+deletePresetButton.addEventListener('click', () => {
+  const preset = presetSelect.value;
+  const name = presetName(preset);
+  const builtIn = preset in BUILT_IN_PRESETS;
+  const question = builtIn ? `Delete your saved "${name}" and go back to the built-in one?` : `Delete the preset "${name}"?`;
+  if (!(preset in savedPresets) || !window.confirm(question)) return;
+  const { [preset]: deleted, ...rest } = savedPresets;
+  savedPresets = rest;
+  storeSavedPresets(savedPresets);
+  const showing = builtIn ? preset : 'default';
+  showPresetOptions(showing);
+  applyPageState(presetState(showing));
+  showPresetStatus(builtIn ? `Deleted your saved "${name}"` : `Deleted "${name}"`);
+});
+document.getElementById('save-preset').addEventListener('click', () => savePreset(presetSelect.value, presetName(presetSelect.value)));
 
 // Save as: a name box, saving under a built-in preset's id when the name matches one, otherwise as a new preset.
 const closeSaveAs = () => {
@@ -1573,12 +1684,11 @@ const confirmSaveAs = () => {
     saveAsName.focus();
     return;
   }
-  const builtIn = Object.keys(BUILT_IN_PRESET_NAMES)
-    .find((id) => BUILT_IN_PRESET_NAMES[id].toLowerCase() === name.toLowerCase());
-  saveMoves(builtIn ?? `saved:${name}`, builtIn ? BUILT_IN_PRESET_NAMES[builtIn] : name);
+  const builtIn = Object.keys(BUILT_IN_PRESETS).find((id) => BUILT_IN_PRESETS[id].name.toLowerCase() === name.toLowerCase());
+  savePreset(builtIn ?? `saved:${name}`, builtIn ? BUILT_IN_PRESETS[builtIn].name : name);
   closeSaveAs();
 };
-document.getElementById('save-moves-as').addEventListener('click', () => {
+document.getElementById('save-preset-as').addEventListener('click', () => {
   saveAsPanel.hidden = false;
   saveAsName.focus();
 });
@@ -1588,15 +1698,13 @@ saveAsName.addEventListener('keydown', (event) => {
   if (event.key === 'Enter') confirmSaveAs();
   if (event.key === 'Escape') closeSaveAs();
 });
-renderMoves();
 
 for (const [group, { radioName }] of Object.entries(UNIT_GROUPS)) {
   document.querySelectorAll(`input[name="${radioName}"]`).forEach((radio) => {
     radio.addEventListener('change', () => changeUnit(group, radio.value));
   });
-  // The browser may restore the previous unit and values on reload, so adopt them without converting.
-  UNIT_GROUPS[group].current = document.querySelector(`input[name="${radioName}"]:checked`).value;
-  showUnitLabels(group);
 }
-// Run once every script has loaded, as the animations use physics.js.
-document.addEventListener('DOMContentLoaded', update);
+// Open on the Default preset (your saved version, if you've saved one), once every script has loaded, as the
+// animations use physics.js.
+showPresetOptions('default');
+document.addEventListener('DOMContentLoaded', () => applyPageState(presetState('default')));
