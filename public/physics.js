@@ -22,18 +22,10 @@ const TRUCK_MASS_KG = 0.9;
 const DECK_FRICTION = 0.15;
 // Where the back foot stands, behind the back axle, as a fraction of the tail's length.
 const BACK_FOOT_TAIL_FRACTION = 0.5;
-// If the front wheels are against the coping and the board slows below this, the rider kicks the nose up over it.
-const ROCK_CATCH_SPEED_CM_PER_S = 60;
 // Smoothing of each foot's measured acceleration, which jumps at every bump, for the foot forces shown.
 const FOOT_FORCE_SMOOTHING_S = 0.03;
-// How long the board stays on the coping before the rider kicks back off it.
-const ROCK_STALL_S = 0.5;
-// If the board is still this slow this long after kicking back off the coping, the rider kicks again.
-const ROCK_RETRY_S = 0.35;
-const ROCK_STUCK_SPEED_CM_PER_S = 20;
-// Kicks as pushes from each foot in multiples of the rider's weight. The first part kicks, the second eases off.
-const LIFT_KICK = [{ seconds: 0.15, back: 1.5, front: 0 }, { seconds: 0.15, back: 0.5, front: 0 }];
-const RETURN_KICK = [{ seconds: 0.12, back: 1.4, front: 0 }, { seconds: 0.12, back: 0.6, front: 0 }];
+// Below this speed along the board, it counts as having come to a stop.
+const STOPPED_SPEED_CM_PER_S = 5;
 // How quickly the rider turns the board in the air to line it up with the landing, in radians per second.
 const AIR_CONTROL_RATE = 8;
 
@@ -324,7 +316,7 @@ function simulateBoard(geo, range, riderScript) {
     const velocity = vecCm(sim.deck.getLinearVelocity());
     const nearX = Math.min(pose.back.x, pose.front.x);
     const farX = Math.max(pose.back.x, pose.front.x);
-    const state = { cog: vecCm(sim.deck.getWorldCenter()), speed: len(velocity) };
+    const state = { cog: vecCm(sim.deck.getWorldCenter()), speed: len(velocity), progress: frontProgress(geo, pose) };
     if ((velocity.x < 0 && farX < leftEdge) || (velocity.x > 0 && nearX > rightEdge)) {
       poses.push({ ...pose, rider: { ...poses[poses.length - 1]?.rider, ...feet, ...state } });
       break;
@@ -332,6 +324,7 @@ function simulateBoard(geo, range, riderScript) {
     riderScript?.({
       t, pose, velocity,
       setFrontShare: sim.setFrontShare,
+      frontShare: sim.getFrontShare(),
       kick: (parts) => startKick(parts, t),
       say: (text) => { action = text; },
     });
@@ -358,19 +351,41 @@ function physicsRollTimeline(geo, range) {
   return timelineFromPoses([...poses, ...holdLast(poses, END_HOLD_S)]);
 }
 
-const ROCK_ACTIONS = {
-  lift: 'Kicking the tail to lift the nose over the coping',
-  place: 'Weight forward to set the front truck on the deck',
-  stall: 'Rocking on the coping',
-  return: 'Kicking the tail to lift back over the coping',
-  away: 'Rolling away',
-};
+/**
+ * How far round the ramp the front wheels are, as a percentage: 0% with the front axle at the start of the curve and
+ * 100% with the front wheels touching the coping. It's measured as the angle of the front axle around the centre of
+ * the transition, so beyond 100% it carries on following the board, over the coping and onto the deck.
+ */
+function frontProgress(geo, pose) {
+  const wheelRadius = geo.board.deckUndersideHeight * WHEEL_RADIUS_PER_DECK_UNDERSIDE_HEIGHT;
+  const angleAround = (p) => Math.atan2(p.x, geo.radius - p.y);
+  const frontAxle = add(pose.front, mul(pose.v, wheelRadius));
+  if (frontAxle.x <= 0) return 0;
+  return (100 * angleAround(frontAxle)) / angleAround(axleTouchingCoping(geo, wheelRadius).axle);
+}
+
+/** What a move does, in words, for the readout. */
+function describeMove(move, index) {
+  const parts = [];
+  if (move.frontWeight !== null) parts.push(`weight ${move.frontWeight}% on the front foot`);
+  if (move.kickTime > 0) parts.push(`kick ${move.kickBack}% back, ${move.kickFront}% front`);
+  return `Move ${index + 1}: ${parts.join(', ') || 'no change'}`;
+}
 
 /**
- * Rolls in and up over the coping, kicking the tail to lift the nose over only if the front wheels catch on it. Once
- * the front truck is past, the rider moves their weight forward to set it down on the deck with the board resting on
- * the coping, holds it there for a moment, then kicks the tail to lift the front wheels back over and rolls away
- * fakie, kicking again if the front wheels catch on the coping.
+ * Turns a move's kick into its two parts: the kick itself, then easing off by the same amount for the same time, so
+ * on average each foot carries its share of the rider's weight. Pushes are multiples of the rider's weight.
+ */
+function kickParts(move, frontShare) {
+  const kick = { front: move.kickFront / 100, back: move.kickBack / 100 };
+  const easeOff = { front: Math.max(0, 2 * frontShare - kick.front), back: Math.max(0, 2 * (1 - frontShare) - kick.back) };
+  return [{ seconds: move.kickTime, ...kick }, { seconds: move.kickTime, ...easeOff }];
+}
+
+/**
+ * Rolls in, with the rider making the moves set out in the table. Each move happens once, a delay after its moment
+ * comes: the front wheels passing a point on the way up, the board coming to a stop, or the front wheels passing a
+ * point on the way back down. A move can shift the rider's weight between the feet and kick.
  * How far over the coping the board gets depends on the speed.
  */
 function physicsRockToFakieTimeline(geo, range) {
@@ -383,56 +398,51 @@ function physicsRockToFakieTimeline(geo, range) {
 }
 
 /**
- * Simulates the rock to fakie described above. The outcome is 'rock' when it works, 'short' when the board doesn't
- * reach the coping, and 'over' when it goes right over onto the deck.
+ * Simulates the rock to fakie described above. The outcome is 'rock' when the front truck gets over the coping and
+ * the board comes back, 'short' when it doesn't reach the coping, and 'over' when the whole board goes over onto the
+ * deck.
  */
 function simulateRockToFakie(geo, range) {
   const coping = copingCentre(geo);
   const copingRadius = geo.coping.diameter / 2;
   const wheelRadius = geo.board.deckUndersideHeight * WHEEL_RADIUS_PER_DECK_UNDERSIDE_HEIGHT;
-  let phase = 'approach';
-  let phaseStart = 0;
+  const moves = geo.board.moves ?? [];
+  const done = moves.map(() => false);
+  const due = moves.map(() => null);
+  let lastProgress = null;
+  let wasMovingUp = false;
   let reachedCoping = false;
   let rolledOnto = false;
 
-  const poses = simulateBoard(geo, range, ({ t, pose, velocity, setFrontShare, kick, say }) => {
-    if (rolledOnto) return;
-    const frontAxle = add(pose.front, mul(pose.v, wheelRadius));
+  const poses = simulateBoard(geo, range, ({ t, pose, velocity, setFrontShare, frontShare, kick, say }) => {
+    const progress = frontProgress(geo, pose);
     const alongBoard = dot(velocity, pose.u);
-    const enter = (next) => { phase = next; phaseStart = t; say(ROCK_ACTIONS[next]); };
-    const frontPastCoping = frontAxle.x > coping.x + copingRadius;
+    const movingUp = alongBoard > STOPPED_SPEED_CM_PER_S;
+    const stopped = wasMovingUp && alongBoard <= STOPPED_SPEED_CM_PER_S;
+    if (movingUp) wasMovingUp = true;
 
+    const frontAxle = add(pose.front, mul(pose.v, wheelRadius));
     const backAxle = add(pose.back, mul(pose.v, wheelRadius));
-    if (['place', 'stall', 'return'].includes(phase) && backAxle.x > coping.x + copingRadius + wheelRadius) {
-      // Came in too fast: the whole board has gone over onto the deck, so ride away along it.
-      rolledOnto = true;
-      setFrontShare(geo.board.frontShare);
-      say('Went right over onto the deck');
-    } else if (phase === 'approach' && !frontPastCoping && alongBoard > 0 && alongBoard < ROCK_CATCH_SPEED_CM_PER_S
-      && len(sub(frontAxle, coping)) < wheelRadius + copingRadius + 1) {
-      // The front wheels are catching on the face of the coping: kick the nose up over it.
-      enter('lift');
-      setFrontShare(0.3);
-      kick(LIFT_KICK);
-    } else if ((phase === 'approach' || phase === 'lift') && frontPastCoping) {
-      enter('place');
-      reachedCoping = true;
-      setFrontShare(0.85);
-    } else if (phase === 'place' && alongBoard <= 0) {
-      enter('stall');
-    } else if (phase === 'stall' && t - phaseStart >= ROCK_STALL_S) {
-      enter('return');
-      setFrontShare(0.15);
-      kick(RETURN_KICK);
-    } else if (phase === 'return' && t - phaseStart >= ROCK_RETRY_S && Math.abs(alongBoard) < ROCK_STUCK_SPEED_CM_PER_S) {
-      // The front wheels have caught on the coping on the way back; kick again.
-      enter('return');
-      kick(RETURN_KICK);
-    } else if ((phase === 'return' && frontAxle.x < coping.x - copingRadius - wheelRadius)
-      || ((phase === 'approach' || phase === 'lift') && alongBoard < 0)) {
-      enter('away');
-      setFrontShare(geo.board.frontShare);
-    }
+    if (frontAxle.x > coping.x + copingRadius) reachedCoping = true;
+    if (backAxle.x > coping.x + copingRadius + wheelRadius && alongBoard > 0) rolledOnto = true;
+
+    moves.forEach((move, i) => {
+      if (done[i] || due[i] !== null) return;
+      // Anywhere before the curve counts as 0%, so a move at 0% or less happens as soon as the board is rolling.
+      const passedUp = move.when === 'up' && lastProgress !== null && progress >= move.at
+        && (lastProgress < move.at || move.at <= 0);
+      const passedDown = move.when === 'down' && lastProgress !== null && lastProgress > move.at && progress <= move.at;
+      if (passedUp || passedDown || (move.when === 'stop' && stopped)) due[i] = t + move.delay;
+    });
+    moves.forEach((move, i) => {
+      if (done[i] || due[i] === null || t < due[i]) return;
+      done[i] = true;
+      const share = move.frontWeight === null ? null : move.frontWeight / 100;
+      if (share !== null) setFrontShare(share);
+      if (move.kickTime > 0) kick(kickParts(move, share ?? frontShare));
+      say(describeMove(move, i));
+    });
+    lastProgress = progress;
   });
   let outcome = 'rock';
   if (!reachedCoping) outcome = 'short';

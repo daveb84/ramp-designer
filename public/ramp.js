@@ -13,6 +13,8 @@ const animationControls = document.getElementById('animation-controls');
 const riderMassInput = document.getElementById('rider-mass');
 const frontShareInput = document.getElementById('front-share');
 const playbackInput = document.getElementById('playback');
+const rockMovesPanel = document.getElementById('rock-moves');
+const movesBody = document.getElementById('moves-body');
 const rollSpeedOut = document.getElementById('roll-speed-out');
 const rockSpeedOut = document.getElementById('rock-speed-out');
 const boardNote = document.getElementById('board-note');
@@ -27,6 +29,7 @@ const readouts = {
   cog: document.getElementById('cog-out'),
   speed: document.getElementById('speed-out'),
   action: document.getElementById('action-out'),
+  progress: document.getElementById('progress-out'),
 };
 const hitsOut = document.getElementById('hits-out');
 const angleOut = document.getElementById('angle-out');
@@ -109,7 +112,7 @@ const UNIT_GROUPS = {
     radioName: 'protrusion-units',
     labelClass: 'protrusion-unit-name',
     inputs: [copingAboveDeckInput, copingFromRampInput],
-    current: 'in',
+    current: 'mm',
   },
   wheelbase: {
     radioName: 'wheelbase-units',
@@ -159,6 +162,7 @@ function readInputs() {
   const board = {
     position: document.querySelector('input[name="board-position"]:checked').value,
     trick: document.querySelector('input[name="trick"]:checked').value,
+    moves: [],
     wheelbase: toBaseUnits(wheelbaseInput, 'wheelbase'),
     deckLength: toBaseUnits(deckLengthInput, 'wheelbase'),
     deckUndersideHeight: toBaseUnits(boardHeightInput, 'boardHeight'),
@@ -166,10 +170,10 @@ function readInputs() {
     riderMass: toBaseUnits(riderMassInput, 'riderMass'),
     frontShare: Number(frontShareInput.value) / 100,
   };
-  if (board.position !== 'none' && !(board.deckLength >= board.wheelbase)) {
+  if (!(board.deckLength >= board.wheelbase)) {
     return { error: 'Skateboard deck length must be at least the wheelbase.' };
   }
-  if (board.position !== 'none' && (!(board.wheelbase > 0) || !(board.deckUndersideHeight > 0))) {
+  if (!(board.wheelbase > 0) || !(board.deckUndersideHeight > 0)) {
     return { error: 'Skateboard wheelbase and deck underside height must both be positive numbers.' };
   }
   if (board.position === 'animation' && (speedInput.value === '' || !(board.speed >= 0))) {
@@ -182,7 +186,94 @@ function readInputs() {
     && (frontShareInput.value === '' || !(board.frontShare >= 0 && board.frontShare <= 1))) {
     return { error: 'Weight on the front foot must be between 0 and 100%.' };
   }
+  if (board.position === 'animation' && board.trick === 'rock-to-fakie') {
+    const moves = readMoves();
+    if (moves.error) return { error: moves.error };
+    board.moves = moves;
+  }
   return { height, radius, coping, board };
+}
+
+/*
+ * The rock to fakie moves: the changes the rider makes on the way up, at the top and on the way back. They're kept
+ * as entered, so a half-typed number isn't lost, and checked when read.
+ */
+const MOVE_TRIGGERS = { up: 'Going up', stop: 'Board stops', down: 'Coming down' };
+const DEFAULT_ROCK_MOVES = [
+  { when: 'up', at: '0', delay: '0', frontWeight: '50', kickBack: '', kickFront: '', kickTime: '' },
+  { when: 'up', at: '105', delay: '0', frontWeight: '85', kickBack: '', kickFront: '', kickTime: '' },
+  { when: 'stop', at: '', delay: '0.5', frontWeight: '15', kickBack: '140', kickFront: '0', kickTime: '0.12' },
+  { when: 'down', at: '90', delay: '0', frontWeight: '50', kickBack: '', kickFront: '', kickTime: '' },
+];
+let rockMoves = DEFAULT_ROCK_MOVES.map((move) => ({ ...move }));
+
+/** The moves as numbers, with blanks as null, or an error naming the first move that doesn't make sense. */
+function readMoves() {
+  const moves = [];
+  for (const [i, entered] of rockMoves.entries()) {
+    const number = (text) => (text.trim() === '' ? null : Number(text));
+    const move = {
+      when: entered.when,
+      at: number(entered.at),
+      delay: number(entered.delay) ?? 0,
+      frontWeight: number(entered.frontWeight),
+      kickBack: number(entered.kickBack) ?? 0,
+      kickFront: number(entered.kickFront) ?? 0,
+      kickTime: number(entered.kickTime) ?? 0,
+    };
+    const problem = move.when !== 'stop' && !Number.isFinite(move.at) ? 'needs a position for the front wheels'
+      : !(move.delay >= 0) ? 'needs a delay of zero or more'
+        : move.frontWeight !== null && !(move.frontWeight >= 0 && move.frontWeight <= 100)
+          ? 'needs the weight on the front foot between 0 and 100%'
+          : !(move.kickTime >= 0) || !(move.kickBack >= 0) || !(move.kickFront >= 0)
+            ? 'needs kicks and kick time of zero or more' : null;
+    if (problem) return { error: `Rock to fakie move ${i + 1} ${problem}.` };
+    moves.push(move);
+  }
+  return moves;
+}
+
+/** Draws the moves table from the moves as entered. */
+function renderMoves() {
+  movesBody.replaceChildren(...rockMoves.map((move, i) => {
+    const row = document.createElement('tr');
+    row.dataset.index = String(i);
+    const cell = (child) => {
+      const td = document.createElement('td');
+      td.append(child);
+      row.append(td);
+    };
+    const when = document.createElement('select');
+    when.dataset.field = 'when';
+    when.setAttribute('aria-label', `Move ${i + 1}: when`);
+    for (const [value, label] of Object.entries(MOVE_TRIGGERS)) when.add(new Option(label, value, false, value === move.when));
+    cell(when);
+    const numberInput = (field, label) => {
+      const input = document.createElement('input');
+      input.type = 'number';
+      input.step = 'any';
+      input.value = move[field];
+      input.dataset.field = field;
+      input.setAttribute('aria-label', `Move ${i + 1}: ${label}`);
+      return input;
+    };
+    const at = numberInput('at', 'front wheels at (%)');
+    at.disabled = move.when === 'stop';
+    cell(at);
+    cell(numberInput('delay', 'delay (s)'));
+    cell(numberInput('frontWeight', 'weight on front foot (%)'));
+    cell(numberInput('kickBack', 'kick, back foot (%)'));
+    cell(numberInput('kickFront', 'kick, front foot (%)'));
+    cell(numberInput('kickTime', 'kick time (s)'));
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'remove';
+    remove.dataset.remove = String(i);
+    remove.textContent = 'Remove';
+    remove.setAttribute('aria-label', `Remove move ${i + 1}`);
+    cell(remove);
+    return row;
+  }));
 }
 
 function showUnitLabels(group) {
@@ -208,6 +299,7 @@ function changeUnit(group, newUnit) {
 
 function update() {
   animationControls.hidden = document.querySelector('input[name="board-position"]:checked').value !== 'animation';
+  rockMovesPanel.hidden = document.querySelector('input[name="trick"]:checked').value !== 'rock-to-fakie';
   const inputs = readInputs();
   if (inputs.error) {
     errorOut.textContent = inputs.error;
@@ -234,10 +326,8 @@ function update() {
   lengthOut.textContent = formatLength(geo.groundLength);
   vertStat.hidden = geo.vertHeight === 0;
   vertOut.textContent = formatLength(geo.vertHeight);
-  const boardSized = geo.board.wheelbase > 0 && geo.board.deckUndersideHeight > 0
-    && geo.board.deckLength >= geo.board.wheelbase;
-  hitsOut.textContent = boardSized ? (deckHitsCoping(geo) ? 'Yes' : 'No') : '–';
-  startSpeedSearch(geo, boardSized);
+  hitsOut.textContent = deckHitsCoping(geo) ? 'Yes' : 'No';
+  startSpeedSearch(geo);
 
   draw(geo);
 }
@@ -285,10 +375,9 @@ function draw(geo) {
   drawCopingDetail(geo);
 
   const { position } = geo.board;
-  boardView.hidden = position === 'none';
+  boardView.hidden = false;
   boardNote.hidden = true;
   boardReadout.hidden = position !== 'animation';
-  if (position === 'none') return;
 
   if (position === 'animation') {
     const bounds = boardViewBounds(geo, sampleRide(geo, rideRange(geo)));
@@ -312,7 +401,13 @@ function draw(geo) {
   drawBoardView(geo, placement ?? ridePose(geo, rideRange(geo).from));
 }
 
-const POSITION_NAMES = { low: 'Low', 'middle-ramp': 'Middle - ramp', 'middle-deck': 'Middle - deck', high: 'High' };
+const POSITION_NAMES = {
+  top: 'Top',
+  'over-coping': 'Over coping',
+  'middle-ramp': 'Middle - ramp',
+  'middle-deck': 'Middle - deck',
+  high: 'High',
+};
 
 function showBoardNote(text) {
   boardNote.textContent = text;
@@ -342,13 +437,8 @@ let speedSearch = null;
  * Works out the speeds needed by simulating, one simulation at a time between frames so the page stays responsive.
  * Starting again, or a change to the inputs, abandons any search still running.
  */
-function startSpeedSearch(geo, boardSized) {
+function startSpeedSearch(geo) {
   stopSpeedSearch();
-  if (!boardSized) {
-    rollSpeedOut.textContent = '–';
-    rockSpeedOut.textContent = '–';
-    return;
-  }
   rollSpeedOut.textContent = 'Working out…';
   rockSpeedOut.textContent = 'Working out…';
   const search = speedsNeeded(geo);
@@ -435,6 +525,7 @@ function showReadout(geo, pose) {
   readouts.cog.textContent = `${(cogAlong / UNITS[unit].basePerUnit).toFixed(1)} ${unit}`;
   readouts.speed.textContent = formatLength(rider.speed, 'speed');
   readouts.action.textContent = rider.action;
+  readouts.progress.textContent = `${Math.round(rider.progress)}%`;
 }
 
 function stopAnimation() {
@@ -625,6 +716,48 @@ function drawBoardView(geo, pose, bounds = boardViewBounds(geo, [pose])) {
   drawDeck(geo, vp, visible.maxX);
   drawCoping(geo, vp);
   drawBoard(geo, pose, vp);
+  if (markedProgress !== null) drawProgressMarker(geo, markedProgress, vp, view);
+}
+
+// The "Front wheels at" percentage being edited in the moves table, marked on the skateboard canvas, or null.
+let markedProgress = null;
+
+/**
+ * Where the front axle is at a percentage of the way round the ramp (see frontProgress): on its way up the ramp to
+ * 100%, then beyond that along its way over the coping onto the deck. On a ramp with vert the board goes straight up
+ * past the coping into the air, so anything past 100% is marked at the coping.
+ */
+function frontAxleAtProgress(geo, percent) {
+  const wheelRadius = geo.board.deckUndersideHeight * WHEEL_RADIUS_PER_DECK_UNDERSIDE_HEIGHT;
+  const touching = axleTouchingCoping(geo, wheelRadius).axle;
+  if (percent <= 0) return { x: 0, y: wheelRadius };
+  const angle = (Math.max(0, percent) / 100) * Math.atan2(touching.x, geo.radius - touching.y);
+  const out = { x: Math.sin(angle), y: -Math.cos(angle) };
+  if (percent <= 100) {
+    if (angle <= geo.angleRad) return add(geo.centre, mul(out, geo.radius - wheelRadius));
+    // Up the vert
+    const x = geo.groundLength - wheelRadius;
+    return { x, y: geo.radius - x / Math.tan(angle) };
+  }
+  // Over the coping, where the line from the centre of the transition meets the front axle's height on the deck.
+  const below = geo.radius - (geo.height + wheelRadius);
+  if (geo.vertHeight > 0 || out.y >= 0 || below <= 0) return touching;
+  return add(geo.centre, mul(out, below / -out.y));
+}
+
+/** A dotted vertical line, labelled, where the front wheels would be at the given percentage. */
+function drawProgressMarker(geo, percent, vp, view) {
+  const x = vp.px(frontAxleAtProgress(geo, percent).x, 0).x;
+  ctx.save();
+  ctx.strokeStyle = COLOURS.angle;
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([2, 4]);
+  ctx.beginPath();
+  ctx.moveTo(x, 0);
+  ctx.lineTo(x, view.height);
+  ctx.stroke();
+  ctx.restore();
+  drawLabel(`${percent}%`, x, 14, COLOURS.angle, 'center', true);
 }
 
 /** Deck surface running back from the lip to toX. */
@@ -790,14 +923,14 @@ function boardPose(back, u, wheelbase) {
 }
 
 /**
- * The still positions: which wheels the board rests on, and how far along the board, from the back axle, the deck
- * rests on the coping.
+ * The still positions resting on the coping: which wheels the board rests on, and how far along the board, from the
+ * back axle, the deck rests on the coping.
  */
 function positionSupport(geo, position) {
   const { wheelbase } = geo.board;
   const copingRadius = geo.coping.diameter / 2;
   return {
-    low: { wheels: 'back', alongBoard: wheelbase - copingRadius - TRUCK_CLEARANCE_CM },
+    'over-coping': { wheels: 'back', alongBoard: wheelbase - copingRadius - TRUCK_CLEARANCE_CM },
     'middle-ramp': { wheels: 'back', alongBoard: wheelbase / 2 },
     'middle-deck': { wheels: 'front', alongBoard: wheelbase / 2 },
     high: { wheels: 'front', alongBoard: copingRadius + TRUCK_CLEARANCE_CM },
@@ -817,6 +950,17 @@ function axleOnRamp(geo, s, wheelRadius) {
   return { x: geo.groundLength - wheelRadius, y: geo.radius + Math.min(s - arcLength, geo.vertHeight) };
 }
 
+/**
+ * Where an axle is when its wheels, rolling up the ramp, first touch the coping, and its distance s along the ramp.
+ */
+function axleTouchingCoping(geo, wheelRadius) {
+  const coping = copingCentre(geo);
+  const touching = wheelRadius + geo.coping.diameter / 2;
+  const sMax = geo.radius * geo.angleRad + geo.vertHeight;
+  const s = bisect((sAt) => len(sub(axleOnRamp(geo, sAt, wheelRadius), coping)) - touching, 0, sMax) ?? sMax;
+  return { axle: axleOnRamp(geo, s, wheelRadius), s };
+}
+
 /** Whether a wheel centred here is clear of the ground, ramp, deck and coping. */
 function wheelClear(geo, axle, wheelRadius) {
   const tolerance = 1e-6;
@@ -832,6 +976,23 @@ function wheelClear(geo, axle, wheelRadius) {
 }
 
 /**
+ * Places the board at the top of the ramp with both sets of wheels on it and the front wheels touching the coping.
+ * Null if the deck would then go through the coping.
+ */
+function placeAtTop(geo, wheelRadius) {
+  const { wheelbase, deckUndersideHeight } = geo.board;
+  const front = axleTouchingCoping(geo, wheelRadius);
+  const sBack = bisect((s) => len(sub(front.axle, axleOnRamp(geo, s, wheelRadius))) - wheelbase, 0, front.s);
+  if (sBack === null) return null;
+  const backAxle = axleOnRamp(geo, sBack, wheelRadius);
+  const u = mul(sub(front.axle, backAxle), 1 / wheelbase);
+  const v = { x: -u.y, y: u.x };
+  const across = deckUndersideHeight - wheelRadius - geo.coping.diameter / 2;
+  if (dot(sub(copingCentre(geo), backAxle), v) > across + 1e-6) return null;
+  return { ...boardPose(sub(backAxle, mul(v, wheelRadius)), u, wheelbase), s: sBack };
+}
+
+/**
  * Places the board in one of the still positions. It rests on one set of wheels (the back wheels on the ramp, or the
  * front wheels on the deck) and on the coping under the deck, at the position's distance along the board. If the
  * other wheels would then go into the ramp or the deck, they rest on it instead, with both sets of wheels down.
@@ -841,6 +1002,7 @@ function wheelClear(geo, axle, wheelRadius) {
 function placeBoard(geo) {
   const { wheelbase, deckUndersideHeight, position } = geo.board;
   const wheelRadius = deckUndersideHeight * WHEEL_RADIUS_PER_DECK_UNDERSIDE_HEIGHT;
+  if (position === 'top') return placeAtTop(geo, wheelRadius);
   const coping = copingCentre(geo);
   const copingRadius = geo.coping.diameter / 2;
   const { wheels, alongBoard } = positionSupport(geo, position);
@@ -1261,6 +1423,41 @@ document.querySelectorAll('input[name="board-position"], input[name="trick"]').f
   radio.addEventListener('change', update);
 });
 window.addEventListener('resize', update);
+
+// Editing the moves re-runs the trick. The table is only redrawn when rows come or go, so typing keeps its place.
+// While a "Front wheels at" box has focus, mark its position on the skateboard canvas.
+const markFrom = (input) => {
+  const percent = Number(input.value);
+  markedProgress = input.dataset.field === 'at' && input.value.trim() !== '' && Number.isFinite(percent) ? percent : null;
+};
+movesBody.addEventListener('focusin', (event) => markFrom(event.target));
+movesBody.addEventListener('focusout', () => { markedProgress = null; });
+movesBody.addEventListener('input', (event) => {
+  const { field } = event.target.dataset;
+  const row = event.target.closest('tr');
+  if (!field || !row) return;
+  markFrom(event.target);
+  rockMoves[Number(row.dataset.index)][field] = event.target.value;
+  if (field === 'when') row.querySelector('[data-field="at"]').disabled = event.target.value === 'stop';
+  update();
+});
+movesBody.addEventListener('click', (event) => {
+  if (event.target.dataset.remove === undefined) return;
+  rockMoves.splice(Number(event.target.dataset.remove), 1);
+  renderMoves();
+  update();
+});
+document.getElementById('add-move').addEventListener('click', () => {
+  rockMoves.push({ when: 'up', at: '', delay: '0', frontWeight: '', kickBack: '', kickFront: '', kickTime: '' });
+  renderMoves();
+  movesBody.lastElementChild.querySelector('[data-field="at"]').focus();
+});
+document.getElementById('reset-moves').addEventListener('click', () => {
+  rockMoves = DEFAULT_ROCK_MOVES.map((move) => ({ ...move }));
+  renderMoves();
+  update();
+});
+renderMoves();
 
 for (const [group, { radioName }] of Object.entries(UNIT_GROUPS)) {
   document.querySelectorAll(`input[name="${radioName}"]`).forEach((radio) => {

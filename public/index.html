@@ -72,16 +72,16 @@
       <div class="form-row">
         <fieldset class="units">
           <legend>Protrusion units</legend>
-          <label class="radio"><input type="radio" name="protrusion-units" value="mm"> mm</label>
-          <label class="radio"><input type="radio" name="protrusion-units" value="in" checked> in</label>
+          <label class="radio"><input type="radio" name="protrusion-units" value="mm" checked> mm</label>
+          <label class="radio"><input type="radio" name="protrusion-units" value="in"> in</label>
         </fieldset>
         <label>
-          <span>Coping protrusion above deck (<span class="protrusion-unit-name">in</span>)</span>
-          <input id="coping-above-deck" type="number" step="any" value="0.375" required>
+          <span>Coping protrusion above deck (<span class="protrusion-unit-name">mm</span>)</span>
+          <input id="coping-above-deck" type="number" step="any" value="10" required>
         </label>
         <label>
-          <span>Coping protrusion from ramp (<span class="protrusion-unit-name">in</span>)</span>
-          <input id="coping-from-ramp" type="number" step="any" value="0.125" required>
+          <span>Coping protrusion from ramp (<span class="protrusion-unit-name">mm</span>)</span>
+          <input id="coping-from-ramp" type="number" step="any" value="10" required>
         </label>
       </div>
     </form>
@@ -119,8 +119,8 @@
       <div class="form-row">
         <fieldset class="units">
           <legend>Skateboard position</legend>
-          <label class="radio"><input type="radio" name="board-position" value="none"> None</label>
-          <label class="radio"><input type="radio" name="board-position" value="low"> Low</label>
+          <label class="radio"><input type="radio" name="board-position" value="top"> Top</label>
+          <label class="radio"><input type="radio" name="board-position" value="over-coping"> Over coping</label>
           <label class="radio"><input type="radio" name="board-position" value="middle-ramp" checked> Middle - ramp</label>
           <label class="radio"><input type="radio" name="board-position" value="middle-deck"> Middle - deck</label>
           <label class="radio"><input type="radio" name="board-position" value="high"> High</label>
@@ -162,6 +162,38 @@
           <span>Playback speed (% of real life)</span>
           <input id="playback" type="number" min="1" max="100" step="any" value="100" required>
         </label>
+      </div>
+      <div class="moves" id="rock-moves" hidden>
+        <div class="moves-header">
+          <h3>Rock to fakie moves</h3>
+          <div class="moves-buttons">
+            <button type="button" id="add-move">Add move</button>
+            <button type="button" id="reset-moves" class="secondary">Reset to default</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="moves-table">
+            <thead>
+              <tr>
+                <th>When</th>
+                <th>Front wheels at (%)</th>
+                <th>Delay (s)</th>
+                <th>Weight on front foot (%)</th>
+                <th>Kick: back foot (%)</th>
+                <th>Kick: front foot (%)</th>
+                <th>Kick time (s)</th>
+                <th><span class="visually-hidden">Remove</span></th>
+              </tr>
+            </thead>
+            <tbody id="moves-body"></tbody>
+          </table>
+        </div>
+        <p class="hint">
+          Front wheels at: 0% is the front axle at the start of the curve and 100% is the front wheels touching the
+          coping; past 100% follows the board over the coping. Leave the weight blank to keep it as it is, and the kick
+          time blank for no kick. Kicks are a share of body weight, and each is followed by easing off for the same
+          time.
+        </p>
       </div>
       </div>
     </form>
@@ -211,6 +243,11 @@
       <div class="stat">
         <span class="stat-label">Speed</span>
         <span class="stat-value" id="speed-out">–</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">Front wheels</span>
+        <span class="stat-value" id="progress-out">–</span>
+        <span class="stat-detail">of the way round the ramp</span>
       </div>
       <div class="stat stat-wide">
         <span class="stat-label">Rider</span>
