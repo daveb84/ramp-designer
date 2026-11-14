@@ -24,6 +24,8 @@ const DECK_FRICTION = 0.15;
 const BACK_FOOT_TAIL_FRACTION = 0.5;
 // If the front wheels are against the coping and the board slows below this, the rider kicks the nose up over it.
 const ROCK_CATCH_SPEED_CM_PER_S = 60;
+// Smoothing of each foot's measured acceleration, which jumps at every bump, for the foot forces shown.
+const FOOT_FORCE_SMOOTHING_S = 0.03;
 // How long the board stays on the coping before the rider kicks back off it.
 const ROCK_STALL_S = 0.5;
 // If the board is still this slow this long after kicking back off the coping, the rider kicks again.
@@ -178,18 +180,21 @@ function buildWorld(geo, startPose) {
 
   /**
    * Pushes each foot into the deck with the given multiple of the rider's weight. Their weight already pushes as
-   * it is split between the feet, so only the difference is added.
+   * it is split between the feet, so only the difference is added. Returns the extra push from each foot, in newtons.
    */
   const pushFeet = (pushes) => {
     const into = deck.getWorldVector(planck.Vec2(0, -1));
     const weight = riderMass * 9.81;
-    const extra = { front: pushes.front - frontShare, back: pushes.back - (1 - frontShare) };
+    const extra = { front: (pushes.front - frontShare) * weight, back: (pushes.back - (1 - frontShare)) * weight };
     for (const side of ['front', 'back']) {
-      deck.applyForce(planck.Vec2.mul(into, extra[side] * weight), deck.getWorldPoint(footPoints[side]));
+      deck.applyForce(planck.Vec2.mul(into, extra[side]), deck.getWorldPoint(footPoints[side]));
     }
+    return extra;
   };
 
-  return { world, deck, wheelFixtures, setFrontShare, getFrontShare: () => frontShare, pushFeet };
+  return {
+    world, deck, wheelFixtures, footPoints, riderMass, setFrontShare, getFrontShare: () => frontShare, pushFeet,
+  };
 }
 
 function touchingAnything(body) {
@@ -239,18 +244,61 @@ function poseFromDeck(geo, deck) {
 }
 
 /**
+ * Measures how hard each foot really pushes into the deck. The rider's weight at a foot moves with the board, so the
+ * deck has to push it along with everything the board does: hold it up against gravity, and turn it with the curve.
+ * The foot's push is its share of the rider's mass times the gravity it feels (gravity less the foot's own
+ * acceleration, which includes the push of the curve), plus any kick, so it rises at the bottom of the transition,
+ * falls near the top, and is nothing in the air.
+ */
+function createFootForceGauge(sim) {
+  const smoothing = PHYSICS_STEP_S / (FOOT_FORCE_SMOOTHING_S + PHYSICS_STEP_S);
+  const velocityAt = (side) => sim.deck.getLinearVelocityFromLocalPoint(sim.footPoints[side]);
+  const previous = { front: velocityAt('front').clone(), back: velocityAt('back').clone() };
+  const acceleration = { front: planck.Vec2(0, 0), back: planck.Vec2(0, 0) };
+
+  return {
+    /** Updates each foot's acceleration over the step just taken. */
+    measure() {
+      for (const side of ['front', 'back']) {
+        const velocity = velocityAt(side).clone();
+        const latest = planck.Vec2.mul(planck.Vec2.sub(velocity, previous[side]), 1 / PHYSICS_STEP_S);
+        acceleration[side] = planck.Vec2.add(acceleration[side],
+          planck.Vec2.mul(planck.Vec2.sub(latest, acceleration[side]), smoothing));
+        previous[side] = velocity;
+      }
+    },
+    /** Each foot's push into the deck, in newtons, given any extra kick from each. */
+    forces(kickExtra) {
+      const into = sim.deck.getWorldVector(planck.Vec2(0, -1));
+      const share = sim.getFrontShare();
+      const mass = { front: sim.riderMass * share, back: sim.riderMass * (1 - share) };
+      const result = {};
+      for (const side of ['front', 'back']) {
+        const felt = planck.Vec2.sub(planck.Vec2(0, -9.81), acceleration[side]);
+        result[side] = Math.max(0, mass[side] * planck.Vec2.dot(felt, into) + (kickExtra?.[side] ?? 0));
+      }
+      return result;
+    },
+  };
+}
+
+/**
  * Simulates the board rolling in from back wheel position range.from at the starting speed. Stops once the board
  * has left the visible area (rolled back off the left, or along the deck past range.to), or after PHYSICS_MAX_S.
  * The rider script is called every step with the current state and can shift the rider's weight, start a kick,
  * or describe what the rider is doing. Returns a pose every PHYSICS_STEP_S, each with where the feet are, how hard
- * each pushes as a multiple of the rider's weight, the centre of gravity of board and rider, the speed, and what
- * the rider is doing.
+ * each really pushes into the deck as a multiple of the rider's standing weight, the centre of gravity of board and
+ * rider, the speed, and what the rider is doing.
  */
 function simulateBoard(geo, range, riderScript) {
   const start = ridePose(geo, range.from);
   const sim = buildWorld(geo, start);
   sim.setFrontShare(geo.board.frontShare);
   sim.deck.setLinearVelocity(planck.Vec2(toM(geo.board.speed), 0));
+  // Find what the board starts out touching, so the first frame knows it's on the ground.
+  sim.world.step(0);
+  const gauge = createFootForceGauge(sim);
+  const standingWeight = geo.board.riderMass * 9.81;
 
   const feet = footPositions(geo);
   const leftEdge = surfacePoint(geo, range.from).x;
@@ -288,20 +336,18 @@ function simulateBoard(geo, range, riderScript) {
       say: (text) => { action = text; },
     });
 
-    // Feet only push against the board while it's on something; in the air the rider steers it instead.
-    const share = sim.getFrontShare();
-    let loads = { front: share, back: 1 - share };
+    // Feet only kick against the board while it's on something; in the air the rider steers it instead.
     const onSomething = touchingAnything(sim.deck);
-    if (onSomething) {
-      const pushes = kickPushes(t);
-      if (pushes) {
-        sim.pushFeet(pushes);
-        loads = { front: pushes.front, back: pushes.back };
-      }
-    }
+    const pushes = onSomething ? kickPushes(t) : null;
+    const kickExtra = pushes ? sim.pushFeet(pushes) : null;
     if (!wheelsTouching(sim)) applyAirControl(geo, sim.deck);
-    poses.push({ ...pose, rider: { ...feet, ...state, loads, action: onSomething ? action : 'In the air' } });
+    const forces = gauge.forces(kickExtra);
+    const loads = standingWeight > 0
+      ? { front: forces.front / standingWeight, back: forces.back / standingWeight }
+      : { front: 0, back: 0 };
+    poses.push({ ...pose, rider: { ...feet, ...state, loads, forces, action: onSomething ? action : 'In the air' } });
     sim.world.step(PHYSICS_STEP_S, 8, 3);
+    gauge.measure();
   }
   return poses;
 }

@@ -158,6 +158,10 @@
           <span>Weight on front foot (%)</span>
           <input id="front-share" type="number" min="0" max="100" step="any" value="50" required>
         </label>
+        <label>
+          <span>Playback speed (% of real life)</span>
+          <input id="playback" type="number" min="1" max="100" step="any" value="100" required>
+        </label>
       </div>
       </div>
     </form>
@@ -193,6 +197,11 @@
         <span class="stat-label">Front foot</span>
         <span class="stat-value" id="front-foot-out">–</span>
         <span class="stat-detail" id="front-foot-force">–</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">Both feet</span>
+        <span class="stat-value" id="total-feet-out">–</span>
+        <span class="stat-detail" id="total-feet-force">–</span>
       </div>
       <div class="stat">
         <span class="stat-label">Centre of gravity</span>

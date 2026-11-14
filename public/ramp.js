@@ -12,6 +12,7 @@ const speedInput = document.getElementById('speed');
 const animationControls = document.getElementById('animation-controls');
 const riderMassInput = document.getElementById('rider-mass');
 const frontShareInput = document.getElementById('front-share');
+const playbackInput = document.getElementById('playback');
 const rollSpeedOut = document.getElementById('roll-speed-out');
 const rockSpeedOut = document.getElementById('rock-speed-out');
 const boardNote = document.getElementById('board-note');
@@ -21,6 +22,8 @@ const readouts = {
   backForce: document.getElementById('back-foot-force'),
   frontFoot: document.getElementById('front-foot-out'),
   frontForce: document.getElementById('front-foot-force'),
+  totalFeet: document.getElementById('total-feet-out'),
+  totalForce: document.getElementById('total-feet-force'),
   cog: document.getElementById('cog-out'),
   speed: document.getElementById('speed-out'),
   action: document.getElementById('action-out'),
@@ -391,12 +394,22 @@ function offCanvasRange(geo, visible) {
 let animation = null;
 
 /** Loops the timeline on the skateboard canvas with the view fitted to the given bounds. */
+/** Playback speed as a fraction of real life, from 1% to 100%; anything else entered plays in real time. */
+function playbackRate() {
+  const percent = Number(playbackInput.value);
+  return percent >= 1 && percent <= 100 ? percent / 100 : 1;
+}
+
 function startAnimation(geo, timeline, bounds) {
-  const startTime = performance.now();
+  let last = performance.now();
+  let elapsed = 0;
   animation = { frame: 0 };
 
+  // Reads the playback speed every frame, so changing it carries on from where the animation is.
   const step = (now) => {
-    const progress = ((now - startTime) % timeline.durationMs) / timeline.durationMs;
+    elapsed = (elapsed + (now - last) * playbackRate()) % timeline.durationMs;
+    last = now;
+    const progress = elapsed / timeline.durationMs;
     const pose = timeline.poseAt(progress);
     if (pose) {
       drawBoardView(geo, pose, bounds);
@@ -404,16 +417,19 @@ function startAnimation(geo, timeline, bounds) {
     }
     animation.frame = requestAnimationFrame(step);
   };
-  step(startTime);
+  step(last);
 }
 
 /** The live figures under the skateboard canvas for the current moment of the animation. */
 function showReadout(geo, pose) {
   const { rider } = pose;
-  const weightN = geo.board.riderMass * GRAVITY_CM_PER_S2 / 100;
-  const foot = (load) => [`${Math.round(load * 100)}%`, `of body weight · ${Math.round(load * weightN)} N`];
-  [readouts.backFoot.textContent, readouts.backForce.textContent] = foot(rider.loads.back);
-  [readouts.frontFoot.textContent, readouts.frontForce.textContent] = foot(rider.loads.front);
+  // Real pushes into the deck, including the curve's, as a share of the rider's standing weight and in newtons.
+  const foot = (load, newtons) => [`${Math.round(load * 100)}%`, `of body weight · ${Math.round(newtons)} N`];
+  [readouts.backFoot.textContent, readouts.backForce.textContent] = foot(rider.loads.back, rider.forces.back);
+  [readouts.frontFoot.textContent, readouts.frontForce.textContent] = foot(rider.loads.front, rider.forces.front);
+  [readouts.totalFeet.textContent, readouts.totalForce.textContent] = foot(
+    rider.loads.back + rider.loads.front, rider.forces.back + rider.forces.front,
+  );
   const cogAlong = dot(sub(rider.cog, pose.back), pose.u);
   const unit = UNIT_GROUPS.wheelbase.current;
   readouts.cog.textContent = `${(cogAlong / UNITS[unit].basePerUnit).toFixed(1)} ${unit}`;
@@ -999,8 +1015,9 @@ function drawBoard(geo, pose, vp) {
 }
 
 /**
- * Where the rider's weight is modelled: a semicircle on the deck at each foot, labelled with how hard it pushes as
- * a share of the rider's weight, and the centre of gravity of board and rider with a line straight down from it.
+ * Where the rider's weight is modelled: a semicircle on the deck at each foot, labelled with how hard it really
+ * pushes into the deck as a share of the rider's standing weight, and the centre of gravity of board and rider with
+ * a line straight down from it.
  */
 function drawRider(geo, pose, vp) {
   const { backFoot, frontFoot, loads } = pose.rider;
