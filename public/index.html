@@ -149,27 +149,33 @@
         </label>
       </div>
       <div class="form-row">
-        <fieldset class="units">
-          <legend>Trick</legend>
-          <label class="radio"><input type="radio" name="trick" value="roll" checked> Roll</label>
-          <label class="radio"><input type="radio" name="trick" value="rock-to-fakie"> Rock to fakie</label>
-        </fieldset>
-        <label>
-          <span>Weight on front foot (%)</span>
-          <input id="front-share" type="number" min="0" max="100" step="any" value="50" required>
-        </label>
         <label>
           <span>Playback speed (% of real life)</span>
           <input id="playback" type="number" min="1" max="100" step="any" value="100" required>
         </label>
       </div>
-      <div class="moves" id="rock-moves" hidden>
+      <div class="moves">
         <div class="moves-header">
-          <h3>Rock to fakie moves</h3>
-          <div class="moves-buttons">
-            <button type="button" id="add-move">Add move</button>
-            <button type="button" id="reset-moves" class="secondary">Reset to default</button>
+          <div class="moves-title">
+            <h3>Rider moves</h3>
+            <label class="preset">
+              <span>Preset</span>
+              <select id="moves-preset"></select>
+            </label>
           </div>
+          <div class="moves-buttons">
+            <span class="save-status" id="moves-status" aria-live="polite"></span>
+            <button type="button" id="save-moves">Save</button>
+            <button type="button" id="save-moves-as" class="secondary">Save as…</button>
+          </div>
+        </div>
+        <div class="save-as" id="save-as" hidden>
+          <label>
+            <span>Save these moves as</span>
+            <input id="save-as-name" type="text" maxlength="40" placeholder="Name">
+          </label>
+          <button type="button" id="save-as-confirm">Save</button>
+          <button type="button" id="save-as-cancel" class="secondary">Cancel</button>
         </div>
         <div class="table-wrap">
           <table class="moves-table">
@@ -182,17 +188,23 @@
                 <th>Kick: back foot (%)</th>
                 <th>Kick: front foot (%)</th>
                 <th>Kick time (s)</th>
-                <th><span class="visually-hidden">Remove</span></th>
+                <th><span class="visually-hidden">Reorder or remove</span></th>
               </tr>
             </thead>
             <tbody id="moves-body"></tbody>
           </table>
         </div>
+        <div class="add-buttons">
+          <button type="button" id="add-move">Add</button>
+          <button type="button" id="add-above" hidden>Add above</button>
+          <button type="button" id="add-below" hidden>Add below</button>
+        </div>
         <p class="hint">
-          Front wheels at: 0% is the front axle at the start of the curve and 100% is the front wheels touching the
-          coping; past 100% follows the board over the coping. Leave the weight blank to keep it as it is, and the kick
-          time blank for no kick. Kicks are a share of body weight, and each is followed by easing off for the same
-          time.
+          Choosing a preset loads its moves (your saved version, if you've saved one), which you can then change. Add
+          puts a move at the bottom; while a row is selected it adds above or below that row instead. Moves happen in order, top to bottom, each once the one before it has happened. Front wheels at: 0% is the
+          front axle at the start of the curve and 100% is the front wheels touching the coping; below 0% is on the flat
+          before the ramp, and past 100% follows the board over the coping. Leave the weight blank to keep it as it is, and the kick time blank for no kick. Kicks
+          are a share of body weight, and each is followed by easing off for the same time.
         </p>
       </div>
       </div>
@@ -208,8 +220,9 @@
         <span class="stat-value" id="roll-speed-out">–</span>
       </div>
       <div class="stat">
-        <span class="stat-label">Speed needed for rock to fakie</span>
-        <span class="stat-value" id="rock-speed-out">–</span>
+        <span class="stat-label">Speed range for the moves</span>
+        <span class="stat-value" id="moves-speed-out">–</span>
+        <span class="stat-detail">front truck over the coping and back</span>
       </div>
     </section>
 

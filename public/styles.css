@@ -163,7 +163,52 @@ input:focus {
   background: var(--panel);
 }
 
-.moves[hidden] { display: none; }
+.moves-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+}
+
+.save-status {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.save-as {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.save-as[hidden] { display: none; }
+
+.add-buttons {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.moves-table tr.selected td {
+  background: #fff4ec;
+}
+
+.preset {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
+.preset select {
+  padding: 6px;
+  font: inherit;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+}
 
 .moves-header {
   display: flex;
@@ -181,6 +226,8 @@ input:focus {
 
 .moves-buttons {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 8px;
 }
 
@@ -248,7 +295,17 @@ button:focus-visible {
   opacity: 0.4;
 }
 
-.moves-table .remove {
+.row-buttons {
+  display: flex;
+  gap: 6px;
+}
+
+.moves-table .row-button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.moves-table .row-button {
   padding: 4px 10px;
   color: var(--muted);
   background: none;

@@ -11,12 +11,17 @@ const boardHeightInput = document.getElementById('board-height');
 const speedInput = document.getElementById('speed');
 const animationControls = document.getElementById('animation-controls');
 const riderMassInput = document.getElementById('rider-mass');
-const frontShareInput = document.getElementById('front-share');
 const playbackInput = document.getElementById('playback');
-const rockMovesPanel = document.getElementById('rock-moves');
+const presetSelect = document.getElementById('moves-preset');
+const movesStatus = document.getElementById('moves-status');
+const saveAsPanel = document.getElementById('save-as');
+const saveAsName = document.getElementById('save-as-name');
+const addButton = document.getElementById('add-move');
+const addAboveButton = document.getElementById('add-above');
+const addBelowButton = document.getElementById('add-below');
 const movesBody = document.getElementById('moves-body');
 const rollSpeedOut = document.getElementById('roll-speed-out');
-const rockSpeedOut = document.getElementById('rock-speed-out');
+const movesSpeedOut = document.getElementById('moves-speed-out');
 const boardNote = document.getElementById('board-note');
 const boardReadout = document.getElementById('board-readout');
 const readouts = {
@@ -161,14 +166,12 @@ function readInputs() {
   }
   const board = {
     position: document.querySelector('input[name="board-position"]:checked').value,
-    trick: document.querySelector('input[name="trick"]:checked').value,
     moves: [],
     wheelbase: toBaseUnits(wheelbaseInput, 'wheelbase'),
     deckLength: toBaseUnits(deckLengthInput, 'wheelbase'),
     deckUndersideHeight: toBaseUnits(boardHeightInput, 'boardHeight'),
     speed: toBaseUnits(speedInput, 'speed'),
     riderMass: toBaseUnits(riderMassInput, 'riderMass'),
-    frontShare: Number(frontShareInput.value) / 100,
   };
   if (!(board.deckLength >= board.wheelbase)) {
     return { error: 'Skateboard deck length must be at least the wheelbase.' };
@@ -182,11 +185,7 @@ function readInputs() {
   if (board.position === 'animation' && (riderMassInput.value === '' || !(board.riderMass >= 0))) {
     return { error: 'Rider weight must be zero or more.' };
   }
-  if (board.position === 'animation'
-    && (frontShareInput.value === '' || !(board.frontShare >= 0 && board.frontShare <= 1))) {
-    return { error: 'Weight on the front foot must be between 0 and 100%.' };
-  }
-  if (board.position === 'animation' && board.trick === 'rock-to-fakie') {
+  if (board.position === 'animation') {
     const moves = readMoves();
     if (moves.error) return { error: moves.error };
     board.moves = moves;
@@ -195,22 +194,61 @@ function readInputs() {
 }
 
 /*
- * The rock to fakie moves: the changes the rider makes on the way up, at the top and on the way back. They're kept
- * as entered, so a half-typed number isn't lost, and checked when read.
+ * The rider's moves: the changes they make on the way up, at the top and on the way back. They're kept as entered,
+ * so a half-typed number isn't lost, and checked when read. A preset fills the table with a trick's moves.
  */
 const MOVE_TRIGGERS = { up: 'Going up', stop: 'Board stops', down: 'Coming down' };
-const DEFAULT_ROCK_MOVES = [
-  { when: 'up', at: '0', delay: '0', frontWeight: '50', kickBack: '', kickFront: '', kickTime: '' },
-  { when: 'up', at: '105', delay: '0', frontWeight: '85', kickBack: '', kickFront: '', kickTime: '' },
-  { when: 'stop', at: '', delay: '0.5', frontWeight: '15', kickBack: '140', kickFront: '0', kickTime: '0.12' },
-  { when: 'down', at: '90', delay: '0', frontWeight: '50', kickBack: '', kickFront: '', kickTime: '' },
-];
-let rockMoves = DEFAULT_ROCK_MOVES.map((move) => ({ ...move }));
+const BUILT_IN_PRESETS = {
+  none: [],
+  'rock-to-fakie': [
+    { when: 'up', at: '0', delay: '0', frontWeight: '50', kickBack: '', kickFront: '', kickTime: '' },
+    { when: 'up', at: '105', delay: '0', frontWeight: '85', kickBack: '', kickFront: '', kickTime: '' },
+    { when: 'stop', at: '', delay: '0.5', frontWeight: '15', kickBack: '140', kickFront: '0', kickTime: '0.12' },
+    { when: 'down', at: '90', delay: '0', frontWeight: '50', kickBack: '', kickFront: '', kickTime: '' },
+  ],
+};
+const BUILT_IN_PRESET_NAMES = { none: 'None', 'rock-to-fakie': 'Rock to fakie' };
+const DEFAULT_PRESET = 'rock-to-fakie';
+
+// Saved presets, in this browser's local storage: { [preset id]: { name, moves } }. Ids of presets saved under a new
+// name start "saved:". Storage can be unavailable (a private window, say), when nothing is kept between visits.
+const SAVED_MOVES_KEY = 'ramp-designer.moves';
+function loadSavedPresets() {
+  try {
+    return JSON.parse(localStorage.getItem(SAVED_MOVES_KEY)) ?? {};
+  } catch {
+    return {};
+  }
+}
+function storeSavedPresets(saved) {
+  try {
+    localStorage.setItem(SAVED_MOVES_KEY, JSON.stringify(saved));
+    return true;
+  } catch {
+    return false;
+  }
+}
+let savedPresets = loadSavedPresets();
+
+/** A preset's moves: the saved version if there is one, otherwise the built-in one. */
+const presetMoves = (preset) => (savedPresets[preset]?.moves ?? BUILT_IN_PRESETS[preset] ?? []).map((move) => ({ ...move }));
+const presetName = (preset) => savedPresets[preset]?.name ?? BUILT_IN_PRESET_NAMES[preset] ?? preset;
+
+/** Fills the preset dropdown: the built-in presets, then any saved under a name of their own. */
+function showPresetOptions(selected) {
+  const saved = Object.keys(savedPresets).filter((id) => !(id in BUILT_IN_PRESETS))
+    .sort((a, b) => presetName(a).localeCompare(presetName(b)));
+  presetSelect.replaceChildren(...[...Object.keys(BUILT_IN_PRESETS), ...saved]
+    .map((id) => new Option(presetName(id), id, false, id === selected)));
+  presetSelect.value = selected;
+}
+showPresetOptions(DEFAULT_PRESET);
+let riderMoves = presetMoves(DEFAULT_PRESET);
 
 /** The moves as numbers, with blanks as null, or an error naming the first move that doesn't make sense. */
 function readMoves() {
   const moves = [];
-  for (const [i, entered] of rockMoves.entries()) {
+  for (const [i, entered] of riderMoves.entries()) {
     const number = (text) => (text.trim() === '' ? null : Number(text));
     const move = {
       when: entered.when,
@@ -227,17 +265,21 @@ function readMoves() {
           ? 'needs the weight on the front foot between 0 and 100%'
           : !(move.kickTime >= 0) || !(move.kickBack >= 0) || !(move.kickFront >= 0)
             ? 'needs kicks and kick time of zero or more' : null;
-    if (problem) return { error: `Rock to fakie move ${i + 1} ${problem}.` };
+    if (problem) return { error: `Move ${i + 1} ${problem}.` };
     moves.push(move);
   }
   return moves;
 }
 
+// The row with focus in one of its controls, if any, which Add above and Add below add next to.
+let selectedMove = null;
+
 /** Draws the moves table from the moves as entered. */
 function renderMoves() {
-  movesBody.replaceChildren(...rockMoves.map((move, i) => {
+  movesBody.replaceChildren(...riderMoves.map((move, i) => {
     const row = document.createElement('tr');
     row.dataset.index = String(i);
+    if (i === selectedMove) row.classList.add('selected');
     const cell = (child) => {
       const td = document.createElement('td');
       td.append(child);
@@ -265,13 +307,22 @@ function renderMoves() {
     cell(numberInput('kickBack', 'kick, back foot (%)'));
     cell(numberInput('kickFront', 'kick, front foot (%)'));
     cell(numberInput('kickTime', 'kick time (s)'));
-    const remove = document.createElement('button');
-    remove.type = 'button';
-    remove.className = 'remove';
-    remove.dataset.remove = String(i);
-    remove.textContent = 'Remove';
-    remove.setAttribute('aria-label', `Remove move ${i + 1}`);
-    cell(remove);
+    const buttons = document.createElement('div');
+    buttons.className = 'row-buttons';
+    const rowButton = (action, label, ariaLabel, disabled = false) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'row-button';
+      button.dataset[action] = String(i);
+      button.textContent = label;
+      button.disabled = disabled;
+      button.setAttribute('aria-label', ariaLabel);
+      buttons.append(button);
+    };
+    rowButton('up', '↑', `Move move ${i + 1} up`, i === 0);
+    rowButton('down', '↓', `Move move ${i + 1} down`, i === riderMoves.length - 1);
+    rowButton('remove', 'Remove', `Remove move ${i + 1}`);
+    cell(buttons);
     return row;
   }));
 }
@@ -299,7 +350,6 @@ function changeUnit(group, newUnit) {
 
 function update() {
   animationControls.hidden = document.querySelector('input[name="board-position"]:checked').value !== 'animation';
-  rockMovesPanel.hidden = document.querySelector('input[name="trick"]:checked').value !== 'rock-to-fakie';
   const inputs = readInputs();
   if (inputs.error) {
     errorOut.textContent = inputs.error;
@@ -310,7 +360,7 @@ function update() {
     hitsOut.textContent = '–';
     stopSpeedSearch();
     rollSpeedOut.textContent = '–';
-    rockSpeedOut.textContent = '–';
+    movesSpeedOut.textContent = '–';
     vertStat.hidden = true;
     boardNote.hidden = true;
     boardReadout.hidden = true;
@@ -386,9 +436,7 @@ function draw(geo) {
     const boardLength = geo.board.deckLength;
     bounds.maxY = Math.max(bounds.maxY, Math.min(geo.height + boardLength * 2, (speed * speed) / (2 * GRAVITY_CM_PER_S2) + boardLength));
     const range = offCanvasRange(geo, visibleBoardArea(bounds));
-    const timeline = geo.board.trick === 'roll'
-      ? physicsRollTimeline(geo, range)
-      : physicsRockToFakieTimeline(geo, range);
+    const timeline = physicsMovesTimeline(geo, range);
     if (timeline.note) showBoardNote(timeline.note);
     startAnimation(geo, timeline, bounds);
     return;
@@ -440,7 +488,7 @@ let speedSearch = null;
 function startSpeedSearch(geo) {
   stopSpeedSearch();
   rollSpeedOut.textContent = 'Working out…';
-  rockSpeedOut.textContent = 'Working out…';
+  movesSpeedOut.textContent = 'Working out…';
   const search = speedsNeeded(geo);
   const step = () => {
     const { done, value } = search.next();
@@ -451,8 +499,10 @@ function startSpeedSearch(geo) {
     speedSearch = null;
     const speed = (cmPerS) => formatLength(cmPerS, 'speed');
     rollSpeedOut.textContent = value.roll === null ? 'Not possible' : speed(value.roll);
-    rockSpeedOut.textContent = value.rock === null ? 'Not possible'
-      : `${speed(value.rock.from).split(' ')[0]} – ${speed(value.rock.to)}`;
+    const { moves } = value;
+    movesSpeedOut.textContent = moves === null ? 'Not possible'
+      : moves.to === null ? `${speed(moves.from)} and up`
+        : `${speed(moves.from).split(' ')[0]} – ${speed(moves.to)}`;
   };
   speedSearch = setTimeout(step, 0);
 }
@@ -723,15 +773,15 @@ function drawBoardView(geo, pose, bounds = boardViewBounds(geo, [pose])) {
 let markedProgress = null;
 
 /**
- * Where the front axle is at a percentage of the way round the ramp (see frontProgress): on its way up the ramp to
- * 100%, then beyond that along its way over the coping onto the deck. On a ramp with vert the board goes straight up
+ * Where the front axle is at a percentage of the way round the ramp (see frontProgress): on the flat before the ramp
+ * when negative, on its way up the ramp to 100%, then beyond that along its way over the coping onto the deck. On a ramp with vert the board goes straight up
  * past the coping into the air, so anything past 100% is marked at the coping.
  */
 function frontAxleAtProgress(geo, percent) {
   const wheelRadius = geo.board.deckUndersideHeight * WHEEL_RADIUS_PER_DECK_UNDERSIDE_HEIGHT;
   const touching = axleTouchingCoping(geo, wheelRadius).axle;
-  if (percent <= 0) return { x: 0, y: wheelRadius };
-  const angle = (Math.max(0, percent) / 100) * Math.atan2(touching.x, geo.radius - touching.y);
+  if (percent <= 0) return { x: percent / percentPerCmOnFlat(geo, wheelRadius), y: wheelRadius };
+  const angle = (percent / 100) * Math.atan2(touching.x, geo.radius - touching.y);
   const out = { x: Math.sin(angle), y: -Math.cos(angle) };
   if (percent <= 100) {
     if (angle <= geo.angleRad) return add(geo.centre, mul(out, geo.radius - wheelRadius));
@@ -1415,47 +1465,128 @@ function drawLabel(text, x, y, colour, align, withBackground = false) {
 for (const input of [
   heightInput, radiusInput, copingInput, copingAboveDeckInput, copingFromRampInput, wheelbaseInput, deckLengthInput,
   boardHeightInput,
-  speedInput, riderMassInput, frontShareInput,
+  speedInput, riderMassInput,
 ]) {
   input.addEventListener('input', update);
 }
-document.querySelectorAll('input[name="board-position"], input[name="trick"]').forEach((radio) => {
+document.querySelectorAll('input[name="board-position"]').forEach((radio) => {
   radio.addEventListener('change', update);
 });
 window.addEventListener('resize', update);
 
-// Editing the moves re-runs the trick. The table is only redrawn when rows come or go, so typing keeps its place.
-// While a "Front wheels at" box has focus, mark its position on the skateboard canvas.
-const markFrom = (input) => {
-  const percent = Number(input.value);
-  markedProgress = input.dataset.field === 'at' && input.value.trim() !== '' && Number.isFinite(percent) ? percent : null;
+// Editing the moves re-runs the ride. The table is only redrawn when rows come or go, so typing keeps its place.
+// While any control in a row has focus, mark that row's "Front wheels at" position on the skateboard canvas.
+const markFrom = (control) => {
+  const row = control.closest('tr');
+  const move = row ? riderMoves[Number(row.dataset.index)] : null;
+  const percent = Number(move?.at);
+  markedProgress = move && move.when !== 'stop' && move.at.trim() !== '' && Number.isFinite(percent) ? percent : null;
 };
-movesBody.addEventListener('focusin', (event) => markFrom(event.target));
-movesBody.addEventListener('focusout', () => { markedProgress = null; });
+/** Selects a row, or none, highlighting it and offering to add above or below it. */
+const selectMove = (index) => {
+  selectedMove = index;
+  for (const row of movesBody.children) row.classList.toggle('selected', Number(row.dataset.index) === index);
+  addButton.hidden = index !== null;
+  addAboveButton.hidden = index === null;
+  addBelowButton.hidden = index === null;
+};
+const addButtons = [addButton, addAboveButton, addBelowButton];
+// Keep the row selected while focus moves to Add above or Add below; clicking them doesn't take focus at all.
+const keepsSelection = (element) => movesBody.contains(element) || addButtons.includes(element);
+movesBody.addEventListener('focusin', (event) => {
+  markFrom(event.target);
+  selectMove(Number(event.target.closest('tr').dataset.index));
+});
+for (const element of [movesBody, ...addButtons]) {
+  element.addEventListener('focusout', (event) => {
+    if (element === movesBody) markedProgress = null;
+    if (!keepsSelection(event.relatedTarget)) selectMove(null);
+  });
+}
+for (const button of addButtons) button.addEventListener('mousedown', (event) => event.preventDefault());
 movesBody.addEventListener('input', (event) => {
   const { field } = event.target.dataset;
   const row = event.target.closest('tr');
   if (!field || !row) return;
+  riderMoves[Number(row.dataset.index)][field] = event.target.value;
   markFrom(event.target);
-  rockMoves[Number(row.dataset.index)][field] = event.target.value;
   if (field === 'when') row.querySelector('[data-field="at"]').disabled = event.target.value === 'stop';
   update();
 });
+const blankMove = () => ({ when: 'up', at: '', delay: '0', frontWeight: '', kickBack: '', kickFront: '', kickTime: '' });
+/** Adds a blank move at the given place in the table and puts the cursor in its position. */
+const addMoveAt = (index) => {
+  riderMoves.splice(index, 0, blankMove());
+  renderMoves();
+  movesBody.children[index].querySelector('[data-field="at"]').focus();
+};
+/** Swaps a move with the one next to it (-1 for above, 1 for below), keeping focus on its button. */
+const shiftMove = (index, by) => {
+  const other = index + by;
+  if (other < 0 || other >= riderMoves.length) return;
+  [riderMoves[index], riderMoves[other]] = [riderMoves[other], riderMoves[index]];
+  renderMoves();
+  const button = movesBody.children[other].querySelector(by < 0 ? '[data-up]' : '[data-down]');
+  (button.disabled ? movesBody.children[other].querySelector('[data-remove]') : button).focus();
+  update();
+};
 movesBody.addEventListener('click', (event) => {
-  if (event.target.dataset.remove === undefined) return;
-  rockMoves.splice(Number(event.target.dataset.remove), 1);
+  const { up, down, remove } = event.target.dataset;
+  if (up !== undefined) {
+    shiftMove(Number(up), -1);
+  } else if (down !== undefined) {
+    shiftMove(Number(down), 1);
+  } else if (remove !== undefined) {
+    riderMoves.splice(Number(remove), 1);
+    renderMoves();
+    update();
+  }
+});
+addButton.addEventListener('click', () => addMoveAt(riderMoves.length));
+addAboveButton.addEventListener('click', () => addMoveAt(selectedMove ?? 0));
+addBelowButton.addEventListener('click', () => addMoveAt((selectedMove ?? riderMoves.length - 1) + 1));
+presetSelect.addEventListener('change', () => {
+  riderMoves = presetMoves(presetSelect.value);
   renderMoves();
   update();
 });
-document.getElementById('add-move').addEventListener('click', () => {
-  rockMoves.push({ when: 'up', at: '', delay: '0', frontWeight: '', kickBack: '', kickFront: '', kickTime: '' });
-  renderMoves();
-  movesBody.lastElementChild.querySelector('[data-field="at"]').focus();
+
+/** Saves the moves as entered under a preset, and says so. */
+function saveMoves(preset, name) {
+  savedPresets = { ...savedPresets, [preset]: { name, moves: riderMoves.map((move) => ({ ...move })) } };
+  const stored = storeSavedPresets(savedPresets);
+  showPresetOptions(preset);
+  movesStatus.textContent = stored ? `Saved as "${name}"` : "Couldn't save: this browser isn't keeping data for the page";
+  clearTimeout(saveMoves.timer);
+  saveMoves.timer = setTimeout(() => { movesStatus.textContent = ''; }, 3000);
+}
+document.getElementById('save-moves').addEventListener('click', () => saveMoves(presetSelect.value, presetName(presetSelect.value)));
+
+// Save as: a name box, saving under a built-in preset's id when the name matches one, otherwise as a new preset.
+const closeSaveAs = () => {
+  saveAsPanel.hidden = true;
+  saveAsName.value = '';
+};
+const confirmSaveAs = () => {
+  const name = saveAsName.value.trim();
+  if (!name) {
+    saveAsName.focus();
+    return;
+  }
+  const builtIn = Object.keys(BUILT_IN_PRESET_NAMES)
+    .find((id) => BUILT_IN_PRESET_NAMES[id].toLowerCase() === name.toLowerCase());
+  saveMoves(builtIn ?? `saved:${name}`, builtIn ? BUILT_IN_PRESET_NAMES[builtIn] : name);
+  closeSaveAs();
+};
+document.getElementById('save-moves-as').addEventListener('click', () => {
+  saveAsPanel.hidden = false;
+  saveAsName.focus();
 });
-document.getElementById('reset-moves').addEventListener('click', () => {
-  rockMoves = DEFAULT_ROCK_MOVES.map((move) => ({ ...move }));
-  renderMoves();
-  update();
+document.getElementById('save-as-confirm').addEventListener('click', confirmSaveAs);
+document.getElementById('save-as-cancel').addEventListener('click', closeSaveAs);
+saveAsName.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') confirmSaveAs();
+  if (event.key === 'Escape') closeSaveAs();
 });
 renderMoves();
 

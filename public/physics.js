@@ -285,7 +285,8 @@ function createFootForceGauge(sim) {
 function simulateBoard(geo, range, riderScript) {
   const start = ridePose(geo, range.from);
   const sim = buildWorld(geo, start);
-  sim.setFrontShare(geo.board.frontShare);
+  // The rider starts balanced, their weight even between the feet.
+  sim.setFrontShare(0.5);
   sim.deck.setLinearVelocity(planck.Vec2(toM(geo.board.speed), 0));
   // Find what the board starts out touching, so the first frame knows it's on the ground.
   sim.world.step(0);
@@ -345,23 +346,27 @@ function simulateBoard(geo, range, riderScript) {
   return poses;
 }
 
-/** Rolls in at the starting speed with the rider's weight fixed. Fast enough, the board gets air off the lip. */
-function physicsRollTimeline(geo, range) {
-  const poses = simulateBoard(geo, range);
-  return timelineFromPoses([...poses, ...holdLast(poses, END_HOLD_S)]);
-}
-
 /**
  * How far round the ramp the front wheels are, as a percentage: 0% with the front axle at the start of the curve and
  * 100% with the front wheels touching the coping. It's measured as the angle of the front axle around the centre of
- * the transition, so beyond 100% it carries on following the board, over the coping and onto the deck.
+ * the transition, so beyond 100% it carries on following the board, over the coping and onto the deck. Before the
+ * curve it goes negative, at the rate it starts round the curve (see percentPerCmOnFlat).
  */
 function frontProgress(geo, pose) {
   const wheelRadius = geo.board.deckUndersideHeight * WHEEL_RADIUS_PER_DECK_UNDERSIDE_HEIGHT;
   const angleAround = (p) => Math.atan2(p.x, geo.radius - p.y);
   const frontAxle = add(pose.front, mul(pose.v, wheelRadius));
-  if (frontAxle.x <= 0) return 0;
+  if (frontAxle.x <= 0) return frontAxle.x * percentPerCmOnFlat(geo, wheelRadius);
   return (100 * angleAround(frontAxle)) / angleAround(axleTouchingCoping(geo, wheelRadius).axle);
+}
+
+/**
+ * How much the front wheels' percentage changes per cm along the flat in front of the ramp: the rate it changes as
+ * they start round the curve, so the two join smoothly at 0%.
+ */
+function percentPerCmOnFlat(geo, wheelRadius) {
+  const touching = axleTouchingCoping(geo, wheelRadius).axle;
+  return 100 / ((geo.radius - wheelRadius) * Math.atan2(touching.x, geo.radius - touching.y));
 }
 
 /** What a move does, in words, for the readout. */
@@ -383,33 +388,33 @@ function kickParts(move, frontShare) {
 }
 
 /**
- * Rolls in, with the rider making the moves set out in the table. Each move happens once, a delay after its moment
- * comes: the front wheels passing a point on the way up, the board coming to a stop, or the front wheels passing a
- * point on the way back down. A move can shift the rider's weight between the feet and kick.
- * How far over the coping the board gets depends on the speed.
+ * Rolls in at the starting speed, with the rider making the moves set out in the table in order, each once the one
+ * before it has happened. A move happens a delay after its moment comes: the front wheels at or past a point while
+ * going up, the board coming to a stop, or the front wheels back at or below a point while coming down. A move can
+ * shift the rider's weight between the feet and kick. With no moves the rider just balances. When there are moves, a
+ * note says if the front truck didn't get over the coping, or the whole board went over onto the deck.
  */
-function physicsRockToFakieTimeline(geo, range) {
-  const { poses, outcome } = simulateRockToFakie(geo, range);
+function physicsMovesTimeline(geo, range) {
+  const { poses, outcome } = simulateMoves(geo, range);
   const notes = {
-    short: 'Not fast enough to reach the coping for a rock to fakie.',
-    over: 'Too fast for a rock to fakie: the board went right over onto the deck.',
+    short: "The front truck didn't get over the coping.",
+    over: 'The board went right over onto the deck.',
   };
-  return timelineFromPoses([...poses, ...holdLast(poses, END_HOLD_S)], notes[outcome] ?? null);
+  const note = geo.board.moves.length > 0 ? notes[outcome] ?? null : null;
+  return timelineFromPoses([...poses, ...holdLast(poses, END_HOLD_S)], note);
 }
 
 /**
- * Simulates the rock to fakie described above. The outcome is 'rock' when the front truck gets over the coping and
- * the board comes back, 'short' when it doesn't reach the coping, and 'over' when the whole board goes over onto the
- * deck.
+ * Simulates the ride described above. The outcome is 'back' when the front truck gets over the coping and the board
+ * comes back, 'short' when it doesn't get over the coping, and 'over' when the whole board goes over onto the deck.
  */
-function simulateRockToFakie(geo, range) {
+function simulateMoves(geo, range) {
   const coping = copingCentre(geo);
   const copingRadius = geo.coping.diameter / 2;
   const wheelRadius = geo.board.deckUndersideHeight * WHEEL_RADIUS_PER_DECK_UNDERSIDE_HEIGHT;
   const moves = geo.board.moves ?? [];
-  const done = moves.map(() => false);
-  const due = moves.map(() => null);
-  let lastProgress = null;
+  let next = 0;
+  let due = null;
   let wasMovingUp = false;
   let reachedCoping = false;
   let rolledOnto = false;
@@ -418,6 +423,7 @@ function simulateRockToFakie(geo, range) {
     const progress = frontProgress(geo, pose);
     const alongBoard = dot(velocity, pose.u);
     const movingUp = alongBoard > STOPPED_SPEED_CM_PER_S;
+    const movingDown = alongBoard < -STOPPED_SPEED_CM_PER_S;
     const stopped = wasMovingUp && alongBoard <= STOPPED_SPEED_CM_PER_S;
     if (movingUp) wasMovingUp = true;
 
@@ -426,25 +432,24 @@ function simulateRockToFakie(geo, range) {
     if (frontAxle.x > coping.x + copingRadius) reachedCoping = true;
     if (backAxle.x > coping.x + copingRadius + wheelRadius && alongBoard > 0) rolledOnto = true;
 
-    moves.forEach((move, i) => {
-      if (done[i] || due[i] !== null) return;
-      // Anywhere before the curve counts as 0%, so a move at 0% or less happens as soon as the board is rolling.
-      const passedUp = move.when === 'up' && lastProgress !== null && progress >= move.at
-        && (lastProgress < move.at || move.at <= 0);
-      const passedDown = move.when === 'down' && lastProgress !== null && lastProgress > move.at && progress <= move.at;
-      if (passedUp || passedDown || (move.when === 'stop' && stopped)) due[i] = t + move.delay;
-    });
-    moves.forEach((move, i) => {
-      if (done[i] || due[i] === null || t < due[i]) return;
-      done[i] = true;
+    // The next move waits for its moment, then for its delay.
+    const move = moves[next];
+    if (move && due === null) {
+      const time = (move.when === 'up' && movingUp && progress >= move.at)
+        || (move.when === 'down' && movingDown && progress <= move.at)
+        || (move.when === 'stop' && stopped);
+      if (time) due = t + move.delay;
+    }
+    if (move && due !== null && t >= due) {
       const share = move.frontWeight === null ? null : move.frontWeight / 100;
       if (share !== null) setFrontShare(share);
       if (move.kickTime > 0) kick(kickParts(move, share ?? frontShare));
-      say(describeMove(move, i));
-    });
-    lastProgress = progress;
+      say(describeMove(move, next));
+      next += 1;
+      due = null;
+    }
   });
-  let outcome = 'rock';
+  let outcome = 'back';
   if (!reachedCoping) outcome = 'short';
   if (rolledOnto) outcome = 'over';
   return { poses, outcome };
@@ -454,6 +459,8 @@ function simulateRockToFakie(geo, range) {
 const SEARCH_MAX_SPEED_CM_PER_S = 2000;
 // How closely the speed searches pin down a speed, in cm/s (about 0.05 mph).
 const SEARCH_PRECISION_CM_PER_S = 2;
+// The steps, in cm/s (about 2 mph), in which the speed searches first go up through the speeds.
+const SEARCH_STEP_CM_PER_S = 90;
 
 /** The board at the given starting speed, starting on the flat in front of the ramp. */
 function atSpeed(geo, speed) {
@@ -467,12 +474,21 @@ function rollReachesDeck(geo, speed) {
 }
 
 /**
- * Finds where a yes/no answer about the starting speed changes, between a speed where it's no and one where it's
- * yes, by halving the gap. A generator, so the caller can run one simulation at a time and keep the page responsive;
- * it returns the speed at which the answer becomes yes.
+ * Finds the lowest starting speed from `from` at which a yes/no answer about the speed becomes yes: it goes up through
+ * the speeds in steps to the first yes, then halves the gap back to the last no. Stepping up first matters because
+ * the answers aren't always tidy at high speed: a board fast enough to fly can come back down the ramp. A generator,
+ * so the caller can run one simulation at a time and keep the page responsive; it returns null if the answer is never
+ * yes up to SEARCH_MAX_SPEED_CM_PER_S.
  */
-function* searchSpeed(answer, no, yes) {
-  while (Math.abs(yes - no) > SEARCH_PRECISION_CM_PER_S) {
+function* lowestSpeed(answer, from) {
+  let no = from;
+  let yes = null;
+  for (let speed = from + SEARCH_STEP_CM_PER_S; speed <= SEARCH_MAX_SPEED_CM_PER_S && yes === null; speed += SEARCH_STEP_CM_PER_S) {
+    if (answer(speed)) yes = speed; else no = speed;
+    yield;
+  }
+  if (yes === null) return null;
+  while (yes - no > SEARCH_PRECISION_CM_PER_S) {
     const middle = (no + yes) / 2;
     if (answer(middle)) yes = middle; else no = middle;
     yield;
@@ -481,24 +497,18 @@ function* searchSpeed(answer, no, yes) {
 }
 
 /**
- * Works out, by simulating, the lowest starting speed that rolls onto the deck, and the range of starting speeds for
- * which the rock to fakie works. Null where there isn't one within SEARCH_MAX_SPEED_CM_PER_S. A generator that
- * yields after each simulation; its result is { roll, rock: { from, to } }.
+ * Works out, by simulating, the lowest starting speed that rolls onto the deck with no moves, and the range of
+ * starting speeds for which the rider's moves get the front truck over the coping and back. The range runs from the
+ * lowest speed that gets the front truck over to the lowest speed above that at which the board goes right over onto
+ * the deck, or has no top when it never does. Null where there isn't one within SEARCH_MAX_SPEED_CM_PER_S. A
+ * generator that yields after each simulation; its result is { roll, moves: { from, to } }, with to null for no top.
  */
 function* speedsNeeded(geo) {
-  const max = SEARCH_MAX_SPEED_CM_PER_S;
-  const roll = rollReachesDeck(geo, max) ? yield* searchSpeed((speed) => rollReachesDeck(geo, speed), 0, max) : null;
-  yield;
+  const roll = yield* lowestSpeed((speed) => rollReachesDeck(geo, speed), 0);
 
-  const rockOutcome = (speed) => simulateRockToFakie(atSpeed(geo, speed), rideRange(geo)).outcome;
-  // Lowest speed that gets past falling short, then the lowest speed from there that goes right over.
-  if (rockOutcome(max) === 'short') return { roll, rock: null };
-  yield;
-  const reaches = yield* searchSpeed((speed) => rockOutcome(speed) !== 'short', 0, max);
-  if (rockOutcome(reaches) !== 'rock') return { roll, rock: null };
-  yield;
-  const goesOver = rockOutcome(max) === 'over'
-    ? yield* searchSpeed((speed) => rockOutcome(speed) === 'over', reaches, max)
-    : null;
-  return { roll, rock: { from: reaches, to: goesOver === null ? max : goesOver - SEARCH_PRECISION_CM_PER_S } };
+  const outcome = (speed) => simulateMoves(atSpeed(geo, speed), rideRange(geo)).outcome;
+  const reaches = yield* lowestSpeed((speed) => outcome(speed) !== 'short', 0);
+  if (reaches === null || outcome(reaches) !== 'back') return { roll, moves: null };
+  const goesOver = yield* lowestSpeed((speed) => outcome(speed) === 'over', reaches);
+  return { roll, moves: { from: reaches, to: goesOver === null ? null : goesOver - SEARCH_PRECISION_CM_PER_S } };
 }
