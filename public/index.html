@@ -12,7 +12,10 @@
   </header>
 
   <main>
-    <form id="ramp-form" autocomplete="off">
+    <p class="error" id="error" hidden></p>
+
+    <h2>Ramp</h2>
+    <form autocomplete="off">
       <div class="form-row">
         <fieldset class="units">
           <legend>Ramp units</legend>
@@ -28,6 +31,33 @@
           <input id="radius" type="number" min="0" step="any" value="5" required>
         </label>
       </div>
+    </form>
+
+    <section class="results">
+      <div class="stat">
+        <span class="stat-label">Angle at top</span>
+        <span class="stat-value" id="angle-out">–</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">Length of ramp surface</span>
+        <span class="stat-value" id="arc-out">–</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label">Length along ground</span>
+        <span class="stat-value" id="length-out">–</span>
+      </div>
+      <div class="stat" id="vert-stat" hidden>
+        <span class="stat-label">Vertical section</span>
+        <span class="stat-value" id="vert-out">–</span>
+      </div>
+    </section>
+
+    <div class="canvas-wrap">
+      <canvas id="ramp-canvas"></canvas>
+    </div>
+
+    <h2>Coping detail</h2>
+    <form autocomplete="off">
       <div class="form-row">
         <fieldset class="units">
           <legend>Coping units</legend>
@@ -56,34 +86,79 @@
       </div>
     </form>
 
+    <div class="canvas-wrap">
+      <canvas id="detail-canvas" class="detail"></canvas>
+    </div>
+
+    <h2>Skateboard</h2>
+    <form autocomplete="off">
+      <div class="form-row">
+        <fieldset class="units">
+          <legend>Skateboard position</legend>
+          <label class="radio"><input type="radio" name="board-position" value="none"> None</label>
+          <label class="radio"><input type="radio" name="board-position" value="low"> Low</label>
+          <label class="radio"><input type="radio" name="board-position" value="middle" checked> Middle</label>
+          <label class="radio"><input type="radio" name="board-position" value="high"> High</label>
+          <label class="radio"><input type="radio" name="board-position" value="animation"> Animation</label>
+        </fieldset>
+      </div>
+      <div class="form-row" id="animation-controls" hidden>
+        <fieldset class="units">
+          <legend>Trick</legend>
+          <label class="radio"><input type="radio" name="trick" value="roll" checked> Roll</label>
+          <label class="radio"><input type="radio" name="trick" value="rock-to-fakie"> Rock to fakie</label>
+        </fieldset>
+        <fieldset class="units">
+          <legend>Speed units</legend>
+          <label class="radio"><input type="radio" name="speed-units" value="km/h"> km/h</label>
+          <label class="radio"><input type="radio" name="speed-units" value="mph" checked> mph</label>
+        </fieldset>
+        <label>
+          <span>Starting speed (<span class="speed-unit-name">mph</span>)</span>
+          <input id="speed" type="number" min="0" step="any" value="9" required>
+        </label>
+      </div>
+      <div class="form-row">
+        <fieldset class="units">
+          <legend>Wheelbase units</legend>
+          <label class="radio"><input type="radio" name="wheelbase-units" value="cm"> cm</label>
+          <label class="radio"><input type="radio" name="wheelbase-units" value="in" checked> in</label>
+        </fieldset>
+        <label>
+          <span>Skateboard wheelbase (<span class="wheelbase-unit-name">in</span>)</span>
+          <input id="wheelbase" type="number" min="0" step="any" value="14" required>
+        </label>
+        <fieldset class="units">
+          <legend>Deck underside units</legend>
+          <label class="radio"><input type="radio" name="board-height-units" value="mm"> mm</label>
+          <label class="radio"><input type="radio" name="board-height-units" value="in" checked> in</label>
+        </fieldset>
+        <label>
+          <span>Height of deck underside above ground (<span class="board-height-unit-name">in</span>)</span>
+          <input id="board-height" type="number" min="0" step="any" value="3" required>
+        </label>
+      </div>
+    </form>
+
     <section class="results">
       <div class="stat">
-        <span class="stat-label">Angle at top</span>
-        <span class="stat-value" id="angle-out">–</span>
+        <span class="stat-label">Skateboard deck hits coping</span>
+        <span class="stat-value" id="hits-out">–</span>
       </div>
       <div class="stat">
-        <span class="stat-label">Length of ramp surface</span>
-        <span class="stat-value" id="arc-out">–</span>
+        <span class="stat-label">Speed needed to roll onto deck</span>
+        <span class="stat-value" id="roll-speed-out">–</span>
       </div>
       <div class="stat">
-        <span class="stat-label">Length along ground</span>
-        <span class="stat-value" id="length-out">–</span>
-      </div>
-      <div class="stat" id="vert-stat" hidden>
-        <span class="stat-label">Vertical section</span>
-        <span class="stat-value" id="vert-out">–</span>
+        <span class="stat-label">Speed needed for rock to fakie</span>
+        <span class="stat-value" id="rock-speed-out">–</span>
       </div>
     </section>
 
-    <p class="error" id="error" hidden></p>
+    <p class="note" id="board-note" hidden></p>
 
-    <div class="canvas-wrap">
-      <canvas id="ramp-canvas"></canvas>
-    </div>
-
-    <h2>Coping detail</h2>
-    <div class="canvas-wrap">
-      <canvas id="detail-canvas" class="detail"></canvas>
+    <div class="canvas-wrap" id="board-view">
+      <canvas id="board-canvas" class="detail"></canvas>
     </div>
   </main>
 

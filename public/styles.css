@@ -40,6 +40,8 @@ form {
   margin-bottom: 16px;
 }
 
+.form-row[hidden] { display: none; }
+
 .form-row {
   display: flex;
   flex-wrap: wrap;
@@ -131,6 +133,11 @@ input:focus {
   font-weight: 600;
 }
 
+.note {
+  color: var(--muted);
+  font-style: italic;
+}
+
 .canvas-wrap {
   background: var(--panel);
   border: 1px solid var(--border);
@@ -158,4 +165,8 @@ h2 {
   label { flex: 1 1 100%; }
   canvas { height: 360px; }
   canvas.detail { height: 300px; }
+}
+
+main > h2:first-of-type {
+  margin-top: 0;
 }
