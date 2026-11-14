@@ -1,0 +1,11 @@
+{
+  "name": "ramp-designer",
+  "version": "1.0.0",
+  "description": "Draws skateboard quarter pipe geometry from the side",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "license": "UNLICENSED",
+  "private": true
+}
