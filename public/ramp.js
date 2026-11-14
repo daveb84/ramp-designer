@@ -202,10 +202,10 @@ function readInputs() {
  */
 const MOVE_TRIGGERS = { up: 'Going up', stop: 'Board stops', down: 'Coming down' };
 const DEFAULT_MOVES = [
-  { when: 'up', at: '0', delay: '0', frontWeight: '50', kickBack: '', kickFront: '', kickTime: '' },
-  { when: 'up', at: '105', delay: '0', frontWeight: '85', kickBack: '', kickFront: '', kickTime: '' },
-  { when: 'stop', at: '', delay: '0.5', frontWeight: '15', kickBack: '140', kickFront: '0', kickTime: '0.12' },
-  { when: 'down', at: '90', delay: '0', frontWeight: '50', kickBack: '', kickFront: '', kickTime: '' },
+  { when: 'up', at: '0', delay: '0', frontWeight: '50', twist: '', twistTime: '' },
+  { when: 'up', at: '102', delay: '0', frontWeight: '70', twist: '', twistTime: '' },
+  { when: 'stop', at: '', delay: '0.5', frontWeight: '15', twist: '60', twistTime: '0.05' },
+  { when: 'down', at: '90', delay: '0', frontWeight: '50', twist: '', twistTime: '' },
 ];
 const copyMoves = (moves) => moves.map((move) => ({ ...move }));
 let riderMoves = copyMoves(DEFAULT_MOVES);
@@ -220,16 +220,15 @@ function readMoves() {
       at: number(entered.at),
       delay: number(entered.delay) ?? 0,
       frontWeight: number(entered.frontWeight),
-      kickBack: number(entered.kickBack) ?? 0,
-      kickFront: number(entered.kickFront) ?? 0,
-      kickTime: number(entered.kickTime) ?? 0,
+      twist: number(entered.twist) ?? 0,
+      twistTime: number(entered.twistTime) ?? 0,
     };
     const problem = move.when !== 'stop' && !Number.isFinite(move.at) ? 'needs a position for the front wheels'
       : !(move.delay >= 0) ? 'needs a delay of zero or more'
         : move.frontWeight !== null && !(move.frontWeight >= 0 && move.frontWeight <= 100)
           ? 'needs the weight on the front foot between 0 and 100%'
-          : !(move.kickTime >= 0) || !(move.kickBack >= 0) || !(move.kickFront >= 0)
-            ? 'needs kicks and kick time of zero or more' : null;
+          : !Number.isFinite(move.twist) ? 'needs the twist to be a number'
+            : !(move.twistTime >= 0) ? 'needs a twist time of zero or more' : null;
     if (problem) return { error: `Move ${i + 1} ${problem}.` };
     moves.push(move);
   }
@@ -269,9 +268,8 @@ function renderMoves() {
     cell(at);
     cell(numberInput('delay', 'delay (s)'));
     cell(numberInput('frontWeight', 'weight on front foot (%)'));
-    cell(numberInput('kickBack', 'kick, back foot (%)'));
-    cell(numberInput('kickFront', 'kick, front foot (%)'));
-    cell(numberInput('kickTime', 'kick time (s)'));
+    cell(numberInput('twist', 'twist (N·m)'));
+    cell(numberInput('twistTime', 'twist time (s)'));
     const buttons = document.createElement('div');
     buttons.className = 'row-buttons';
     const rowButton = (action, label, ariaLabel, disabled = false) => {
@@ -1205,8 +1203,8 @@ function drawBoard(geo, pose, vp) {
 
 /**
  * Where the rider's weight is modelled: a semicircle on the deck at each foot, labelled with how hard it really
- * pushes into the deck as a share of the rider's standing weight, and the centre of gravity of board and rider with
- * a line straight down from it.
+ * pushes into the deck as a share of the rider's standing weight, the rider's body at its pivot, and the centre of
+ * gravity of board and rider with a line straight down from it.
  */
 function drawRider(geo, pose, vp) {
   const { backFoot, frontFoot, loads } = pose.rider;
@@ -1230,7 +1228,84 @@ function drawRider(geo, pose, vp) {
       COLOURS.rider, 'center', true);
   }
   ctx.restore();
+  if (pose.rider.pivotAlong !== undefined) drawRiderBody(geo, pose, vp);
   if (pose.rider.cog) drawCentreOfGravity(geo, pose.rider.cog, vp);
+}
+
+// Twists smaller than this, in N m, aren't shown.
+const SHOWN_TWIST_NM = 5;
+
+/**
+ * The rider's body as modelled: their weight at the pivot pinning it to the board, dashed lines from there to each
+ * foot it presses through, and a curved arrow round the pivot while their legs twist the board.
+ */
+function drawRiderBody(geo, pose, vp) {
+  const { pivotAlong, backFoot, frontFoot, twist } = pose.rider;
+  const deckTop = geo.board.deckUndersideHeight + BOARD_THICKNESS_CM;
+  const onDeck = (along) => toPx(vp, add(add(pose.back, mul(pose.u, along)), mul(pose.v, deckTop + deckRiseAt(geo, along))));
+  const pivot = onDeck(pivotAlong);
+  const weightRadius = Math.max(10, 7 * vp.scale);
+
+  ctx.save();
+  ctx.strokeStyle = COLOURS.rider;
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([4, 3]);
+  for (const along of [backFoot, frontFoot]) {
+    const foot = onDeck(along);
+    ctx.beginPath();
+    ctx.moveTo(pivot.x, pivot.y);
+    ctx.lineTo(foot.x, foot.y);
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+
+  // The body's weight
+  ctx.globalAlpha = 0.25;
+  ctx.fillStyle = COLOURS.rider;
+  ctx.beginPath();
+  ctx.arc(pivot.x, pivot.y, weightRadius, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.globalAlpha = 1;
+
+  // The pivot
+  ctx.fillStyle = '#ffffff';
+  ctx.beginPath();
+  ctx.arc(pivot.x, pivot.y, 4, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+  ctx.fillStyle = COLOURS.rider;
+  ctx.beginPath();
+  ctx.arc(pivot.x, pivot.y, 1.5, 0, Math.PI * 2);
+  ctx.fill();
+
+  // The legs' twist: anticlockwise in the world (nose up) is anticlockwise on screen too.
+  if (Math.abs(twist) > SHOWN_TWIST_NM) {
+    const radius = weightRadius + 8;
+    const boardAngle = Math.atan2(-pose.u.y, pose.u.x);
+    const start = boardAngle - Math.PI * 0.85;
+    const end = boardAngle - Math.PI * 0.15;
+    const anticlockwise = twist > 0;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(pivot.x, pivot.y, radius, anticlockwise ? end : start, anticlockwise ? start : end, anticlockwise);
+    ctx.stroke();
+    // Arrowhead at the end the twist turns towards
+    const tipAngle = anticlockwise ? start : end;
+    const tip = { x: pivot.x + radius * Math.cos(tipAngle), y: pivot.y + radius * Math.sin(tipAngle) };
+    const along = anticlockwise ? -1 : 1;
+    const heading = tipAngle + (along * Math.PI) / 2;
+    ctx.beginPath();
+    ctx.moveTo(tip.x, tip.y);
+    ctx.lineTo(tip.x - 7 * Math.cos(heading - 0.5), tip.y - 7 * Math.sin(heading - 0.5));
+    ctx.lineTo(tip.x - 7 * Math.cos(heading + 0.5), tip.y - 7 * Math.sin(heading + 0.5));
+    ctx.closePath();
+    ctx.fill();
+  }
+  ctx.restore();
+
+  const weightLabelGap = weightRadius + (Math.abs(twist) > SHOWN_TWIST_NM ? 26 : 12);
+  drawLabel(`${formatLength(geo.board.riderMass, 'riderMass')}`, pivot.x + pose.v.x * weightLabelGap,
+    pivot.y - pose.v.y * weightLabelGap, COLOURS.rider, 'center', true);
 }
 
 /** The usual quartered circle, with a dashed line straight down to the surface below it. */
@@ -1491,7 +1566,7 @@ movesBody.addEventListener('input', (event) => {
   if (field === 'when') row.querySelector('[data-field="at"]').disabled = event.target.value === 'stop';
   update();
 });
-const blankMove = () => ({ when: 'up', at: '', delay: '0', frontWeight: '', kickBack: '', kickFront: '', kickTime: '' });
+const blankMove = () => ({ when: 'up', at: '', delay: '0', frontWeight: '', twist: '', twistTime: '' });
 /** Adds a blank move at the given place in the table and puts the cursor in its position. */
 const addMoveAt = (index) => {
   riderMoves.splice(index, 0, blankMove());
@@ -1563,35 +1638,53 @@ function applyPageState(state) {
     if (unitGroup.radioName in state.choices) unitGroup.current = state.choices[unitGroup.radioName];
     showUnitLabels(group);
   }
-  riderMoves = copyMoves(state.moves ?? []);
+  riderMoves = (state.moves ?? []).map(movesWithTwist());
   renderMoves();
   update();
 }
 
+/**
+ * Converts moves saved when kicks were set as a push from each foot (as a share of body weight) into the twist those
+ * pushes made, taking the rider's weight to be in the middle of the stance. Reads the board and rider from the page.
+ */
+function movesWithTwist() {
+  const board = {
+    wheelbase: toBaseUnits(wheelbaseInput, 'wheelbase'),
+    deckLength: toBaseUnits(deckLengthInput, 'wheelbase'),
+    riderMass: toBaseUnits(riderMassInput, 'riderMass'),
+  };
+  const { backFoot, frontFoot } = footPositions({ board });
+  const middle = (backFoot + frontFoot) / 2;
+  const weight = board.riderMass * 9.81;
+  return (move) => {
+    if (!('kickBack' in move)) return { ...move };
+    const { kickBack, kickFront, kickTime, ...rest } = move;
+    const extra = { back: (Number(kickBack) || 0) / 100 - 0.5, front: (Number(kickFront) || 0) / 100 - 0.5 };
+    // Pushing into the deck ahead of the middle turns the nose down.
+    const twist = -(extra.front * weight * toM(frontFoot - middle) + extra.back * weight * toM(backFoot - middle));
+    const timed = Number(kickTime) > 0;
+    return { ...rest, twist: timed ? String(Math.round(twist)) : '', twistTime: timed ? kickTime : '' };
+  };
+}
+
 const BUILT_IN_PRESETS = {
   default: { name: 'Default', state: () => pageState(true) },
-  roll: {
-    name: 'Roll',
-    state: () => {
-      const firstOpened = pageState(true);
-      return { ...firstOpened, choices: { ...firstOpened.choices, 'board-position': 'animation' }, moves: [] };
-    },
-  },
-  // Lifts the nose over the coping, rocks with the coping under the middle of the board, then lifts back over. Found
-  // by searching the simulation on the page's first-opened ramp, where it works from about 10.4 to 10.8 mph.
-  'rock-on-coping': {
-    name: 'Rock on the coping',
+  // Lifts the nose just over the coping with the back wheels kept on the ramp, rocks on the coping, then lifts just
+  // back over. Found by searching the simulation on the page's first-opened ramp, where it works at about 9.5 mph.
+  'rock-to-fakie': {
+    name: 'Rock to Fakie',
     state: () => {
       const firstOpened = pageState(true);
       return {
-        values: { ...firstOpened.values, speed: '10.5' },
+        values: { ...firstOpened.values, speed: '9.5' },
         choices: { ...firstOpened.choices, 'board-position': 'animation', 'speed-units': 'mph' },
         moves: [
-          { when: 'up', at: '0', delay: '0', frontWeight: '50', kickBack: '', kickFront: '', kickTime: '' },
-          { when: 'up', at: '94', delay: '0', frontWeight: '30', kickBack: '150', kickFront: '0', kickTime: '0.12' },
-          { when: 'up', at: '108', delay: '0', frontWeight: '85', kickBack: '0', kickFront: '150', kickTime: '0.08' },
-          { when: 'stop', at: '', delay: '0.6', frontWeight: '15', kickBack: '160', kickFront: '0', kickTime: '0.12' },
-          { when: 'down', at: '90', delay: '0', frontWeight: '50', kickBack: '', kickFront: '', kickTime: '' },
+          { when: 'up', at: '0', delay: '0', frontWeight: '50', twist: '', twistTime: '' },
+          { when: 'up', at: '84', delay: '0', frontWeight: '30', twist: '', twistTime: '' },
+          { when: 'up', at: '90', delay: '0', frontWeight: '', twist: '100', twistTime: '0.08' },
+          { when: 'up', at: '106', delay: '0', frontWeight: '60', twist: '', twistTime: '' },
+          { when: 'stop', at: '', delay: '0.5', frontWeight: '20', twist: '40', twistTime: '0.05' },
+          { when: 'down', at: '90', delay: '0', frontWeight: '50', twist: '', twistTime: '' },
         ],
       };
     },

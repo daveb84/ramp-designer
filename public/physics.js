@@ -4,13 +4,11 @@
  * Rigid-body simulation of the board and rider using planck.js (a port of Box2D). planck works in metres and
  * kilograms; the rest of the app works in cm, so positions are converted on the way in and out.
  *
- * The rider's weight sits on the deck as two point masses, one at each foot: the front foot over the front truck
- * and the back foot on the tail, just behind the back truck. Board, wheels and rider are one rigid body. Shifting
- * the weight between the feet moves the rider's centre of gravity along the board.
- *
- * The rider can also kick: for a moment their legs push one foot into the deck harder than their weight and ease off
- * the other, to flick the nose up or press it down. Each kick is followed by easing off by the same amount, as the
- * rider's body would rise and settle, so on average the feet still carry just the rider's weight.
+ * The rider is a body of their own, pinned to the board by a pivot at deck height. Its weight presses down on the
+ * board through the pivot, so where the pivot is between the feet sets how the weight is shared between them. The
+ * rider's legs twist the board against their body: the board, being far lighter, turns under the body, which barely
+ * moves, so the rider can lift the nose while their weight keeps the back wheels down. The moves' twists and steering
+ * in the air are these twists.
  */
 
 const PHYSICS_STEP_S = SIM_STEP_S;
@@ -22,7 +20,13 @@ const TRUCK_MASS_KG = 0.9;
 const DECK_FRICTION = 0.15;
 // Where the back foot stands, behind the back axle, as a fraction of the tail's length.
 const BACK_FOOT_TAIL_FRACTION = 0.5;
-// Smoothing of each foot's measured acceleration, which jumps at every bump, for the foot forces shown.
+// How hard a person is to turn end over end, per kg: about 12 kg m² for a 70 kg rider.
+const RIDER_TURNING_INERTIA_PER_KG = 12 / 70;
+// How fast the rider can move their weight along the board.
+const WEIGHT_SHIFT_CM_PER_S = 150;
+const VELOCITY_ITERATIONS = 20;
+const POSITION_ITERATIONS = 8;
+// Smoothing of the measured push through the pivot, which jumps at every bump, for the foot forces shown.
 const FOOT_FORCE_SMOOTHING_S = 0.03;
 // Below this speed along the board, it counts as having come to a stop.
 const STOPPED_SPEED_CM_PER_S = 5;
@@ -140,27 +144,34 @@ function buildWorld(geo, startPose) {
   });
   addDeckShape(geo, deck);
 
-  // The feet carry the rider's weight but don't collide with anything.
+  // The rider's body, pinned to the deck at the point their weight is over. It doesn't collide with anything.
   const feet = footPositions(geo);
-  const footRadiusM = 0.02;
-  const footArea = Math.PI * footRadiusM * footRadiusM;
-  // On top of the deck, which is higher where a foot is on a kick.
-  const footLocal = (along) => planck.Vec2(toM(along - wheelbase / 2), toM(BOARD_THICKNESS_CM / 2 + deckRiseAt(geo, along)));
-  const foot = (along) => deck.createFixture(new planck.Circle(footLocal(along), footRadiusM), {
-    density: 0,
-    filterMaskBits: 0,
-  });
-  const frontFoot = foot(feet.frontFoot);
-  const backFoot = foot(feet.backFoot);
-  const footPoints = { front: footLocal(feet.frontFoot), back: footLocal(feet.backFoot) };
+  const stance = feet.frontFoot - feet.backFoot;
+  const deckPoint = (along) => planck.Vec2(toM(along - wheelbase / 2), toM(BOARD_THICKNESS_CM / 2 + deckRiseAt(geo, along)));
+  const weightAlong = (share) => feet.backFoot + share * stance;
   let frontShare = 0.5;
-  const setFrontShare = (share) => {
-    frontFoot.setDensity((riderMass * share) / footArea);
-    backFoot.setDensity((riderMass * (1 - share)) / footArea);
-    deck.resetMassData();
-    frontShare = share;
+  let pivotAlong = weightAlong(frontShare);
+  const body = world.createBody({ type: 'dynamic', position: deck.getWorldPoint(deckPoint(pivotAlong)) });
+  body.createFixture(new planck.Circle(0.05), { density: 1, filterMaskBits: 0 });
+  const mass = Math.max(riderMass, 0.1);
+  body.setMassData({ mass, center: planck.Vec2(0, 0), I: mass * RIDER_TURNING_INERTIA_PER_KG });
+  const pivot = world.createJoint(new planck.RevoluteJoint({}, deck, body, body.getPosition()));
+
+  /** Where the rider wants their weight, as a share on the front foot. They move it there over the next steps. */
+  const setFrontShare = (share) => { frontShare = share; };
+  /** Moves the pivot a step towards where the rider wants their weight. */
+  const shiftWeight = (seconds) => {
+    const shift = weightAlong(frontShare) - pivotAlong;
+    const most = WEIGHT_SHIFT_CM_PER_S * seconds;
+    pivotAlong += Math.max(-most, Math.min(most, shift));
+    pivot.m_localAnchorA = deckPoint(pivotAlong);
   };
 
+  /** The rider's legs twisting the board against their body (anticlockwise positive); the body gets the opposite. */
+  const twist = (torque) => {
+    deck.applyTorque(torque);
+    body.applyTorque(-torque);
+  };
   // The wheels are part of the same rigid body and slide without friction, which behaves like frictionless
   // rolling. Separate wheel bodies on joints sag and lose energy under a rider many times their weight.
   const axleBelowCentre = BOARD_THICKNESS_CM / 2 + deckUndersideHeight - wheelRadius;
@@ -170,22 +181,18 @@ function buildWorld(geo, startPose) {
       friction: 0,
     }));
 
-  /**
-   * Pushes each foot into the deck with the given multiple of the rider's weight. Their weight already pushes as
-   * it is split between the feet, so only the difference is added. Returns the extra push from each foot, in newtons.
-   */
-  const pushFeet = (pushes) => {
-    const into = deck.getWorldVector(planck.Vec2(0, -1));
-    const weight = riderMass * 9.81;
-    const extra = { front: (pushes.front - frontShare) * weight, back: (pushes.back - (1 - frontShare)) * weight };
-    for (const side of ['front', 'back']) {
-      deck.applyForce(planck.Vec2.mul(into, extra[side]), deck.getWorldPoint(footPoints[side]));
-    }
-    return extra;
-  };
-
   return {
-    world, deck, wheelFixtures, footPoints, riderMass, setFrontShare, getFrontShare: () => frontShare, pushFeet,
+    world,
+    deck,
+    body,
+    pivot,
+    wheelFixtures,
+    feet,
+    setFrontShare,
+    getPivotAlong: () => pivotAlong,
+    shiftWeight,
+    twist,
+    step: () => world.step(PHYSICS_STEP_S, VELOCITY_ITERATIONS, POSITION_ITERATIONS),
   };
 }
 
@@ -213,15 +220,19 @@ function surfaceAngleBelow(geo, x) {
 }
 
 /**
- * In the air, the rider turns the board towards the angle of the surface below, ready to land on it, rather
- * than letting it keep spinning. Torque for a critically damped turn at AIR_CONTROL_RATE.
+ * In the air, the rider twists the board towards the angle of the surface below, ready to land on it, rather
+ * than letting it keep spinning. Torque for a critically damped turn of the board at AIR_CONTROL_RATE, which it
+ * returns.
  */
-function applyAirControl(geo, deck) {
+function applyAirControl(geo, sim) {
+  const { deck } = sim;
   const below = surfaceAngleBelow(geo, deck.getWorldCenter().x * 100);
   let error = below - deck.getAngle();
   error = Math.atan2(Math.sin(error), Math.cos(error));
   const inertia = deck.getInertia() - deck.getMass() * planck.Vec2.lengthSquared(deck.getLocalCenter());
-  deck.applyTorque(inertia * (AIR_CONTROL_RATE ** 2 * error - 2 * AIR_CONTROL_RATE * deck.getAngularVelocity()));
+  const torque = inertia * (AIR_CONTROL_RATE ** 2 * error - 2 * AIR_CONTROL_RATE * deck.getAngularVelocity());
+  sim.twist(torque);
+  return torque;
 }
 
 /** Board pose, in the app's terms, from the deck body. */
@@ -236,40 +247,30 @@ function poseFromDeck(geo, deck) {
 }
 
 /**
- * Measures how hard each foot really pushes into the deck. The rider's weight at a foot moves with the board, so the
- * deck has to push it along with everything the board does: hold it up against gravity, and turn it with the curve.
- * The foot's push is its share of the rider's mass times the gravity it feels (gravity less the foot's own
- * acceleration, which includes the push of the curve), plus any kick, so it rises at the bottom of the transition,
- * falls near the top, and is nothing in the air.
+ * Measures how hard each foot really pushes into the deck. The rider's body presses on the board through the pivot
+ * (holding the rider up against gravity and turning them with the curve), and their legs twist the board about it.
+ * Together those are the two feet's pushes: they add up to the pivot's push, and the difference between them makes the
+ * twist. So the pushes rise at the bottom of the transition, fall near the top, and are nothing in the air.
  */
 function createFootForceGauge(sim) {
   const smoothing = PHYSICS_STEP_S / (FOOT_FORCE_SMOOTHING_S + PHYSICS_STEP_S);
-  const velocityAt = (side) => sim.deck.getLinearVelocityFromLocalPoint(sim.footPoints[side]);
-  const previous = { front: velocityAt('front').clone(), back: velocityAt('back').clone() };
-  const acceleration = { front: planck.Vec2(0, 0), back: planck.Vec2(0, 0) };
-
+  let push = 0;
   return {
-    /** Updates each foot's acceleration over the step just taken. */
+    /** Updates the pivot's push into the deck over the step just taken. */
     measure() {
-      for (const side of ['front', 'back']) {
-        const velocity = velocityAt(side).clone();
-        const latest = planck.Vec2.mul(planck.Vec2.sub(velocity, previous[side]), 1 / PHYSICS_STEP_S);
-        acceleration[side] = planck.Vec2.add(acceleration[side],
-          planck.Vec2.mul(planck.Vec2.sub(latest, acceleration[side]), smoothing));
-        previous[side] = velocity;
-      }
+      const onBody = sim.pivot.getReactionForce(1 / PHYSICS_STEP_S);
+      const latest = planck.Vec2.dot(onBody, sim.deck.getWorldVector(planck.Vec2(0, 1)));
+      push += (latest - push) * smoothing;
     },
-    /** Each foot's push into the deck, in newtons, given any extra kick from each. */
-    forces(kickExtra) {
-      const into = sim.deck.getWorldVector(planck.Vec2(0, -1));
-      const share = sim.getFrontShare();
-      const mass = { front: sim.riderMass * share, back: sim.riderMass * (1 - share) };
-      const result = {};
-      for (const side of ['front', 'back']) {
-        const felt = planck.Vec2.sub(planck.Vec2(0, -9.81), acceleration[side]);
-        result[side] = Math.max(0, mass[side] * planck.Vec2.dot(felt, into) + (kickExtra?.[side] ?? 0));
-      }
-      return result;
+    /** Each foot's push into the deck, in newtons, given the legs' twist on the board. */
+    forces(twist) {
+      const { backFoot, frontFoot } = sim.feet;
+      const pivotAlong = sim.getPivotAlong();
+      const back = toM(backFoot - pivotAlong);
+      const front = toM(frontFoot - pivotAlong);
+      // Feet pushing into the deck turn it about the pivot the opposite way to the twist they make.
+      const frontPush = (-twist - push * back) / (front - back);
+      return { front: Math.max(0, frontPush), back: Math.max(0, push - frontPush) };
     },
   };
 }
@@ -285,9 +286,9 @@ function createFootForceGauge(sim) {
 function simulateBoard(geo, range, riderScript) {
   const start = ridePose(geo, range.from);
   const sim = buildWorld(geo, start);
-  // The rider starts balanced, their weight even between the feet.
-  sim.setFrontShare(0.5);
+  // The rider starts balanced, their weight even between the feet, rolling along with the board.
   sim.deck.setLinearVelocity(planck.Vec2(toM(geo.board.speed), 0));
+  sim.body.setLinearVelocity(planck.Vec2(toM(geo.board.speed), 0));
   // Find what the board starts out touching, so the first frame knows it's on the ground.
   sim.world.step(0);
   const gauge = createFootForceGauge(sim);
@@ -297,27 +298,18 @@ function simulateBoard(geo, range, riderScript) {
   const leftEdge = surfacePoint(geo, range.from).x;
   const rightEdge = surfacePoint(geo, range.to).x;
   const poses = [];
-  let kick = null;
+  // The twist the rider's legs are making, in N m, and until when.
+  let legTwist = { torque: 0, until: 0 };
   let action = 'Rolling';
-  const startKick = (parts, t) => { kick = { parts, start: t }; };
-  /** Each foot's push during the current kick, or null when not kicking. */
-  const kickPushes = (t) => {
-    if (!kick) return null;
-    let elapsed = t - kick.start;
-    for (const part of kick.parts) {
-      if (elapsed < part.seconds) return part;
-      elapsed -= part.seconds;
-    }
-    kick = null;
-    return null;
-  };
 
   for (let t = 0; t < PHYSICS_MAX_S; t += PHYSICS_STEP_S) {
     const pose = poseFromDeck(geo, sim.deck);
     const velocity = vecCm(sim.deck.getLinearVelocity());
     const nearX = Math.min(pose.back.x, pose.front.x);
     const farX = Math.max(pose.back.x, pose.front.x);
-    const state = { cog: vecCm(sim.deck.getWorldCenter()), speed: len(velocity), progress: frontProgress(geo, pose) };
+    const cog = mul(add(mul(vecCm(sim.deck.getWorldCenter()), sim.deck.getMass()), mul(vecCm(sim.body.getWorldCenter()), sim.body.getMass())),
+      1 / (sim.deck.getMass() + sim.body.getMass()));
+    const state = { cog, speed: len(velocity), progress: frontProgress(geo, pose) };
     if ((velocity.x < 0 && farX < leftEdge) || (velocity.x > 0 && nearX > rightEdge)) {
       poses.push({ ...pose, rider: { ...poses[poses.length - 1]?.rider, ...feet, ...state } });
       break;
@@ -326,22 +318,23 @@ function simulateBoard(geo, range, riderScript) {
       t, pose, velocity,
       onSomething: touchingAnything(sim.deck),
       setFrontShare: sim.setFrontShare,
-      frontShare: sim.getFrontShare(),
-      kick: (parts) => startKick(parts, t),
+      twistFor: (torque, seconds) => { legTwist = { torque, until: t + seconds }; },
       say: (text) => { action = text; },
     });
 
-    // Feet only kick against the board while it's on something; in the air the rider steers it instead.
+    // The legs only twist the board while it's on something; in the air the rider steers it instead.
+    sim.shiftWeight(PHYSICS_STEP_S);
     const onSomething = touchingAnything(sim.deck);
-    const pushes = onSomething ? kickPushes(t) : null;
-    const kickExtra = pushes ? sim.pushFeet(pushes) : null;
-    if (!wheelsTouching(sim)) applyAirControl(geo, sim.deck);
-    const forces = gauge.forces(kickExtra);
+    const twist = onSomething && t < legTwist.until ? legTwist.torque : 0;
+    if (twist) sim.twist(twist);
+    const steer = wheelsTouching(sim) ? 0 : applyAirControl(geo, sim);
+    const forces = gauge.forces(twist);
     const loads = standingWeight > 0
       ? { front: forces.front / standingWeight, back: forces.back / standingWeight }
       : { front: 0, back: 0 };
-    poses.push({ ...pose, rider: { ...feet, ...state, loads, forces, action: onSomething ? action : 'In the air' } });
-    sim.world.step(PHYSICS_STEP_S, 8, 3);
+    const rider = { ...feet, ...state, loads, forces, pivotAlong: sim.getPivotAlong(), twist: twist + steer };
+    poses.push({ ...pose, rider: { ...rider, action: onSomething ? action : 'In the air' } });
+    sim.step();
     gauge.measure();
   }
   return poses;
@@ -374,25 +367,16 @@ function percentPerCmOnFlat(geo, wheelRadius) {
 function describeMove(move, index) {
   const parts = [];
   if (move.frontWeight !== null) parts.push(`weight ${move.frontWeight}% on the front foot`);
-  if (move.kickTime > 0) parts.push(`kick ${move.kickBack}% back, ${move.kickFront}% front`);
+  if (move.twistTime > 0) parts.push(`twist ${move.twist > 0 ? '+' : ''}${move.twist} N m for ${move.twistTime} s`);
   return `Move ${index + 1}: ${parts.join(', ') || 'no change'}`;
 }
 
-/**
- * Turns a move's kick into its two parts: the kick itself, then easing off by the same amount for the same time, so
- * on average each foot carries its share of the rider's weight. Pushes are multiples of the rider's weight.
- */
-function kickParts(move, frontShare) {
-  const kick = { front: move.kickFront / 100, back: move.kickBack / 100 };
-  const easeOff = { front: Math.max(0, 2 * frontShare - kick.front), back: Math.max(0, 2 * (1 - frontShare) - kick.back) };
-  return [{ seconds: move.kickTime, ...kick }, { seconds: move.kickTime, ...easeOff }];
-}
 
 /**
  * Rolls in at the starting speed, with the rider making the moves set out in the table in order, each once the one
  * before it has happened. A move happens a delay after its moment comes: the front wheels at or past a point while
  * going up, the board coming to a stop on the ramp or the coping, or the front wheels back at or below a point while
- * coming down. A move can shift the rider's weight between the feet and kick. With no moves the rider just balances.
+ * coming down. A move can shift the rider's weight between the feet and twist the board under their body. With no moves the rider just balances.
  * When there are moves, a note says if the front truck didn't get over the coping, or the whole board went over onto
  * the deck.
  */
@@ -421,7 +405,7 @@ function simulateMoves(geo, range) {
   let reachedCoping = false;
   let rolledOnto = false;
 
-  const poses = simulateBoard(geo, range, ({ t, pose, velocity, onSomething, setFrontShare, frontShare, kick, say }) => {
+  const poses = simulateBoard(geo, range, ({ t, pose, velocity, onSomething, setFrontShare, twistFor, say }) => {
     const progress = frontProgress(geo, pose);
     const alongBoard = dot(velocity, pose.u);
     const movingUp = alongBoard > STOPPED_SPEED_CM_PER_S;
@@ -446,7 +430,7 @@ function simulateMoves(geo, range) {
     if (move && due !== null && t >= due) {
       const share = move.frontWeight === null ? null : move.frontWeight / 100;
       if (share !== null) setFrontShare(share);
-      if (move.kickTime > 0) kick(kickParts(move, share ?? frontShare));
+      if (move.twistTime > 0) twistFor(move.twist, move.twistTime);
       say(describeMove(move, next));
       next += 1;
       due = null;
