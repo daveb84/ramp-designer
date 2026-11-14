@@ -35,9 +35,16 @@ main {
 
 form {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 16px;
   margin-bottom: 16px;
+}
+
+.form-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 16px;
 }
 
 label {
@@ -137,8 +144,18 @@ canvas {
   height: 520px;
 }
 
+canvas.detail {
+  height: 400px;
+}
+
+h2 {
+  margin: 24px 0 8px;
+  font-size: 1.1rem;
+}
+
 @media (max-width: 600px) {
   input { width: 100%; }
   label { flex: 1 1 100%; }
   canvas { height: 360px; }
+  canvas.detail { height: 300px; }
 }

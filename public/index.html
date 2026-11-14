@@ -13,19 +13,47 @@
 
   <main>
     <form id="ramp-form" autocomplete="off">
-      <fieldset class="units">
-        <legend>Units</legend>
-        <label class="radio"><input type="radio" name="units" value="cm"> cm</label>
-        <label class="radio"><input type="radio" name="units" value="ft" checked> ft</label>
-      </fieldset>
-      <label>
-        <span>Height (<span class="unit-name">ft</span>)</span>
-        <input id="height" type="number" min="0" step="any" value="3" required>
-      </label>
-      <label>
-        <span>Transition radius (<span class="unit-name">ft</span>)</span>
-        <input id="radius" type="number" min="0" step="any" value="5" required>
-      </label>
+      <div class="form-row">
+        <fieldset class="units">
+          <legend>Ramp units</legend>
+          <label class="radio"><input type="radio" name="units" value="cm"> cm</label>
+          <label class="radio"><input type="radio" name="units" value="ft" checked> ft</label>
+        </fieldset>
+        <label>
+          <span>Height (<span class="unit-name">ft</span>)</span>
+          <input id="height" type="number" min="0" step="any" value="3" required>
+        </label>
+        <label>
+          <span>Transition radius (<span class="unit-name">ft</span>)</span>
+          <input id="radius" type="number" min="0" step="any" value="5" required>
+        </label>
+      </div>
+      <div class="form-row">
+        <fieldset class="units">
+          <legend>Coping units</legend>
+          <label class="radio"><input type="radio" name="coping-units" value="mm"> mm</label>
+          <label class="radio"><input type="radio" name="coping-units" value="in" checked> in</label>
+        </fieldset>
+        <label>
+          <span>Coping outside diameter (<span class="coping-unit-name">in</span>)</span>
+          <input id="coping" type="number" min="0" step="any" value="2.375" required>
+        </label>
+      </div>
+      <div class="form-row">
+        <fieldset class="units">
+          <legend>Protrusion units</legend>
+          <label class="radio"><input type="radio" name="protrusion-units" value="mm"> mm</label>
+          <label class="radio"><input type="radio" name="protrusion-units" value="in" checked> in</label>
+        </fieldset>
+        <label>
+          <span>Coping protrusion above deck (<span class="protrusion-unit-name">in</span>)</span>
+          <input id="coping-above-deck" type="number" step="any" value="0.375" required>
+        </label>
+        <label>
+          <span>Coping protrusion from ramp (<span class="protrusion-unit-name">in</span>)</span>
+          <input id="coping-from-ramp" type="number" step="any" value="0.125" required>
+        </label>
+      </div>
     </form>
 
     <section class="results">
@@ -51,6 +79,11 @@
 
     <div class="canvas-wrap">
       <canvas id="ramp-canvas"></canvas>
+    </div>
+
+    <h2>Coping detail</h2>
+    <div class="canvas-wrap">
+      <canvas id="detail-canvas" class="detail"></canvas>
     </div>
   </main>
 
