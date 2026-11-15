@@ -2,8 +2,10 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 
+// A local server for development: serves public/ by default, or the folder given (`node server.js dist` serves the
+// built site, as it will be hosted).
 const PORT = process.env.PORT || 3000;
-const PUBLIC_DIR = path.join(__dirname, 'public');
+const PUBLIC_DIR = path.join(__dirname, process.argv[2] ?? 'public');
 
 // Browser builds of npm dependencies, served from node_modules
 const VENDOR_FILES = {

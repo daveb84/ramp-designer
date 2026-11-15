@@ -4,11 +4,16 @@
   "description": "Draws skateboard quarter pipe geometry from the side",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "build": "node scripts/build.mjs",
+    "preview": "npm run build && node server.js dist"
   },
   "license": "UNLICENSED",
   "private": true,
   "dependencies": {
     "planck": "1.5.1"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
   }
 }
