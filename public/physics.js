@@ -18,8 +18,6 @@ const DECK_MASS_KG = 1.6;
 const TRUCK_MASS_KG = 0.9;
 // Maple sliding on waxed steel coping
 const DECK_FRICTION = 0.15;
-// Where the back foot stands, behind the back axle, as a fraction of the tail's length.
-const BACK_FOOT_TAIL_FRACTION = 0.5;
 // How hard a person is to turn end over end, per kg: about 12 kg m² for a 70 kg rider.
 const RIDER_TURNING_INERTIA_PER_KG = 12 / 70;
 // How fast the rider can move their weight along the board.
@@ -37,9 +35,13 @@ const toM = (cm) => cm / 100;
 const vecM = (p) => planck.Vec2(toM(p.x), toM(p.y));
 const vecCm = (p) => ({ x: p.x * 100, y: p.y * 100 });
 
-/** Foot positions along the board, in cm from the back axle. */
+/**
+ * Foot positions along the board, in cm from the back axle, from where each foot is set relative to its truck's
+ * wheels (positive towards that end of the board).
+ */
 function footPositions(geo) {
-  return { backFoot: -deckProfile(geo).overhang * BACK_FOOT_TAIL_FRACTION, frontFoot: geo.board.wheelbase };
+  const { wheelbase, frontFootOffset, backFootOffset } = geo.board;
+  return { backFoot: -backFootOffset, frontFoot: wheelbase + frontFootOffset };
 }
 
 /**
@@ -121,28 +123,40 @@ function addDeckShape(geo, deck) {
   }
 }
 
-/**
- * Builds the world with the board at the given starting pose. Returns the bodies and a function to change how the
- * rider's weight is split between the feet.
- */
-function buildWorld(geo, startPose) {
-  const { wheelbase, deckUndersideHeight, riderMass } = geo.board;
-  const wheelRadius = deckUndersideHeight * WHEEL_RADIUS_PER_DECK_UNDERSIDE_HEIGHT;
+/** Builds a world with the ramp and the board (deck and wheels) at the given starting pose, without a rider. */
+function buildBoardWorld(geo, startPose) {
+  const { wheelbase, deckUndersideHeight } = geo.board;
+  const wheelRadius = geo.board.wheelRadius;
   const world = new planck.World({ gravity: planck.Vec2(0, -9.81) });
+  addRamp(geo, world.createBody(), 10000);
 
-  const ramp = world.createBody();
-  addRamp(geo, ramp, 10000);
-
+  // The deck body's origin is the middle of the deck, half way between the axles.
   const { u, v } = startPose;
-  const onBoard = (along, up) => add(add(startPose.back, mul(u, along)), mul(v, up));
-
-  // The body's origin is the middle of the deck, half way between the axles.
   const deck = world.createBody({
     type: 'dynamic',
-    position: vecM(onBoard(wheelbase / 2, deckUndersideHeight + BOARD_THICKNESS_CM / 2)),
+    position: vecM(add(add(startPose.back, mul(u, wheelbase / 2)), mul(v, deckUndersideHeight + BOARD_THICKNESS_CM / 2))),
     angle: Math.atan2(u.y, u.x),
   });
   addDeckShape(geo, deck);
+
+  // The wheels are part of the same rigid body and slide without friction, which behaves like frictionless
+  // rolling. Separate wheel bodies on joints sag and lose energy under a rider many times their weight.
+  const axleBelowCentre = BOARD_THICKNESS_CM / 2 + deckUndersideHeight - wheelRadius;
+  const wheelFixtures = [-wheelbase / 2, wheelbase / 2].map((along) =>
+    deck.createFixture(new planck.Circle(planck.Vec2(toM(along), -toM(axleBelowCentre)), toM(wheelRadius)), {
+      density: TRUCK_MASS_KG / (Math.PI * toM(wheelRadius) ** 2),
+      friction: 0,
+    }));
+  return { world, deck, wheelFixtures };
+}
+
+/**
+ * Builds the world with the board at the given starting pose and the pivot rider on it. Returns the bodies and a
+ * function to change how the rider's weight is split between the feet.
+ */
+function buildWorld(geo, startPose) {
+  const { wheelbase, riderMass } = geo.board;
+  const { world, deck, wheelFixtures } = buildBoardWorld(geo, startPose);
 
   // The rider's body, pinned to the deck at the point their weight is over. It doesn't collide with anything.
   const feet = footPositions(geo);
@@ -172,15 +186,6 @@ function buildWorld(geo, startPose) {
     deck.applyTorque(torque);
     body.applyTorque(-torque);
   };
-  // The wheels are part of the same rigid body and slide without friction, which behaves like frictionless
-  // rolling. Separate wheel bodies on joints sag and lose energy under a rider many times their weight.
-  const axleBelowCentre = BOARD_THICKNESS_CM / 2 + deckUndersideHeight - wheelRadius;
-  const wheelFixtures = [-wheelbase / 2, wheelbase / 2].map((along) =>
-    deck.createFixture(new planck.Circle(planck.Vec2(toM(along), -toM(axleBelowCentre)), toM(wheelRadius)), {
-      density: TRUCK_MASS_KG / (Math.PI * toM(wheelRadius) ** 2),
-      friction: 0,
-    }));
-
   return {
     world,
     deck,
@@ -347,7 +352,7 @@ function simulateBoard(geo, range, riderScript) {
  * curve it goes negative, at the rate it starts round the curve (see percentPerCmOnFlat).
  */
 function frontProgress(geo, pose) {
-  const wheelRadius = geo.board.deckUndersideHeight * WHEEL_RADIUS_PER_DECK_UNDERSIDE_HEIGHT;
+  const wheelRadius = geo.board.wheelRadius;
   const angleAround = (p) => Math.atan2(p.x, geo.radius - p.y);
   const frontAxle = add(pose.front, mul(pose.v, wheelRadius));
   if (frontAxle.x <= 0) return frontAxle.x * percentPerCmOnFlat(geo, wheelRadius);
@@ -397,7 +402,7 @@ function physicsMovesTimeline(geo, range) {
 function simulateMoves(geo, range) {
   const coping = copingCentre(geo);
   const copingRadius = geo.coping.diameter / 2;
-  const wheelRadius = geo.board.deckUndersideHeight * WHEEL_RADIUS_PER_DECK_UNDERSIDE_HEIGHT;
+  const wheelRadius = geo.board.wheelRadius;
   const moves = geo.board.moves ?? [];
   let next = 0;
   let due = null;
@@ -405,7 +410,8 @@ function simulateMoves(geo, range) {
   let reachedCoping = false;
   let rolledOnto = false;
 
-  const poses = simulateBoard(geo, range, ({ t, pose, velocity, onSomething, setFrontShare, twistFor, say }) => {
+  const simulate = geo.board.riderModel === 'body' ? simulateBoardWithBody : simulateBoard;
+  const poses = simulate(geo, range, ({ t, pose, velocity, onSomething, setFrontShare, twistFor, say }) => {
     const progress = frontProgress(geo, pose);
     const alongBoard = dot(velocity, pose.u);
     const movingUp = alongBoard > STOPPED_SPEED_CM_PER_S;
@@ -456,7 +462,8 @@ function atSpeed(geo, speed) {
 
 /** Whether the board, simply rolling in at this starting speed, ends up on the deck. */
 function rollReachesDeck(geo, speed) {
-  const poses = simulateBoard(atSpeed(geo, speed), rideRange(geo));
+  const simulate = geo.board.riderModel === 'body' ? simulateBoardWithBody : simulateBoard;
+  const poses = simulate(atSpeed(geo, speed), rideRange(geo));
   return poses[poses.length - 1].back.x > geo.groundLength;
 }
 

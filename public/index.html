@@ -113,26 +113,25 @@
     <form autocomplete="off">
       <div class="form-row">
         <fieldset class="units">
-          <legend>Length units</legend>
-          <label class="radio"><input type="radio" name="wheelbase-units" value="cm"> cm</label>
-          <label class="radio"><input type="radio" name="wheelbase-units" value="in" checked> in</label>
+          <legend>Units</legend>
+          <label class="radio"><input type="radio" name="board-units" value="mm" checked> mm</label>
+          <label class="radio"><input type="radio" name="board-units" value="in"> in</label>
         </fieldset>
         <label>
-          <span>Deck length, nose to tail (<span class="wheelbase-unit-name">in</span>)</span>
-          <input id="deck-length" type="number" min="0" step="any" value="31" required>
+          <span>Deck length, nose to tail (<span class="board-unit-name">mm</span>)</span>
+          <input id="deck-length" type="number" min="0" step="any" value="810" required>
         </label>
         <label>
-          <span>Skateboard wheelbase (<span class="wheelbase-unit-name">in</span>)</span>
-          <input id="wheelbase" type="number" min="0" step="any" value="14" required>
+          <span>Wheelbase (<span class="board-unit-name">mm</span>)</span>
+          <input id="wheelbase" type="number" min="0" step="any" value="445" required>
         </label>
-        <fieldset class="units">
-          <legend>Deck underside units</legend>
-          <label class="radio"><input type="radio" name="board-height-units" value="mm"> mm</label>
-          <label class="radio"><input type="radio" name="board-height-units" value="in" checked> in</label>
-        </fieldset>
         <label>
-          <span>Height of deck underside above ground (<span class="board-height-unit-name">in</span>)</span>
-          <input id="board-height" type="number" min="0" step="any" value="3" required>
+          <span>Axle height, axle to deck underside (<span class="board-unit-name">mm</span>)</span>
+          <input id="axle-height" type="number" min="0" step="any" value="49" required>
+        </label>
+        <label>
+          <span>Wheel diameter (<span class="board-unit-name">mm</span>)</span>
+          <input id="wheel-diameter" type="number" min="0" step="any" value="52" required>
         </label>
       </div>
       <div class="form-row">
@@ -140,13 +139,24 @@
           <legend>Skateboard position</legend>
           <label class="radio"><input type="radio" name="board-position" value="top"> Top</label>
           <label class="radio"><input type="radio" name="board-position" value="over-coping"> Over coping</label>
-          <label class="radio"><input type="radio" name="board-position" value="middle-ramp" checked> Middle - ramp</label>
+          <label class="radio"><input type="radio" name="board-position" value="middle-ramp"> Middle - ramp</label>
           <label class="radio"><input type="radio" name="board-position" value="middle-deck"> Middle - deck</label>
           <label class="radio"><input type="radio" name="board-position" value="high"> High</label>
-          <label class="radio"><input type="radio" name="board-position" value="animation"> Animation</label>
+          <label class="radio"><input type="radio" name="board-position" value="animation" checked> Animation</label>
         </fieldset>
       </div>
       <div class="form-rows" id="animation-controls" hidden>
+      <div class="form-row">
+        <fieldset class="units">
+          <legend>Rider model</legend>
+          <label class="radio"><input type="radio" name="rider-model" value="pivot" checked> Pivot</label>
+          <label class="radio"><input type="radio" name="rider-model" value="body"> Body (experimental)</label>
+        </fieldset>
+        <label>
+          <span>Playback speed (% of real life)</span>
+          <input id="playback" type="number" min="1" max="100" step="any" value="70" required>
+        </label>
+      </div>
       <div class="form-row">
         <fieldset class="units">
           <legend>Speed units</legend>
@@ -155,8 +165,10 @@
         </fieldset>
         <label>
           <span>Starting speed (<span class="speed-unit-name">mph</span>)</span>
-          <input id="speed" type="number" min="0" step="any" value="9" required>
+          <input id="speed" type="number" min="0" step="any" value="9.5" required>
         </label>
+      </div>
+      <div class="form-row">
         <fieldset class="units">
           <legend>Rider weight units</legend>
           <label class="radio"><input type="radio" name="rider-mass-units" value="kg" checked> kg</label>
@@ -168,9 +180,32 @@
         </label>
       </div>
       <div class="form-row">
+        <fieldset class="units">
+          <legend>Foot position units</legend>
+          <label class="radio"><input type="radio" name="foot-units" value="mm" checked> mm</label>
+          <label class="radio"><input type="radio" name="foot-units" value="in"> in</label>
+        </fieldset>
         <label>
-          <span>Playback speed (% of real life)</span>
-          <input id="playback" type="number" min="1" max="100" step="any" value="100" required>
+          <span>Front foot from front wheels (<span class="foot-unit-name">mm</span>, + towards the nose)</span>
+          <input id="front-foot" type="number" step="any" value="-60" required>
+        </label>
+        <label>
+          <span>Back foot from back wheels (<span class="foot-unit-name">mm</span>, + towards the tail)</span>
+          <input id="back-foot" type="number" step="any" value="80" required>
+        </label>
+      </div>
+      <div class="form-row" id="body-controls" hidden>
+        <label>
+          <span>Rider height (cm)</span>
+          <input id="rider-height" type="number" min="100" max="220" step="any" value="175" required>
+        </label>
+        <label>
+          <span>Crouch (%)</span>
+          <input id="crouch" type="number" min="0" max="100" step="any" value="30" required>
+        </label>
+        <label>
+          <span>Shoulder lean (°, forward +)</span>
+          <input id="lean" type="number" min="-45" max="45" step="any" value="0" required>
         </label>
       </div>
       <div class="moves">
@@ -296,5 +331,6 @@
   <script src="vendor/planck.min.js"></script>
   <script src="ramp.js"></script>
   <script src="physics.js"></script>
+  <script src="rider-body.js"></script>
 </body>
 </html>

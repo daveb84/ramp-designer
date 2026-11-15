@@ -7,10 +7,17 @@ const copingAboveDeckInput = document.getElementById('coping-above-deck');
 const copingFromRampInput = document.getElementById('coping-from-ramp');
 const wheelbaseInput = document.getElementById('wheelbase');
 const deckLengthInput = document.getElementById('deck-length');
-const boardHeightInput = document.getElementById('board-height');
+const axleHeightInput = document.getElementById('axle-height');
+const wheelDiameterInput = document.getElementById('wheel-diameter');
 const speedInput = document.getElementById('speed');
 const animationControls = document.getElementById('animation-controls');
+const bodyControls = document.getElementById('body-controls');
+const riderHeightInput = document.getElementById('rider-height');
+const crouchInput = document.getElementById('crouch');
+const leanInput = document.getElementById('lean');
 const riderMassInput = document.getElementById('rider-mass');
+const frontFootInput = document.getElementById('front-foot');
+const backFootInput = document.getElementById('back-foot');
 const playbackInput = document.getElementById('playback');
 const presetSelect = document.getElementById('page-preset');
 const presetStatus = document.getElementById('preset-status');
@@ -122,19 +129,14 @@ const UNIT_GROUPS = {
     inputs: [copingAboveDeckInput, copingFromRampInput],
     current: 'mm',
   },
-  wheelbase: {
-    radioName: 'wheelbase-units',
-    labelClass: 'wheelbase-unit-name',
-    inputs: [deckLengthInput, wheelbaseInput],
-    current: 'in',
-  },
-  boardHeight: {
-    radioName: 'board-height-units',
-    labelClass: 'board-height-unit-name',
-    inputs: [boardHeightInput],
-    current: 'in',
+  board: {
+    radioName: 'board-units',
+    labelClass: 'board-unit-name',
+    inputs: [deckLengthInput, wheelbaseInput, axleHeightInput, wheelDiameterInput],
+    current: 'mm',
   },
   speed: { radioName: 'speed-units', labelClass: 'speed-unit-name', inputs: [speedInput], current: 'mph' },
+  feet: { radioName: 'foot-units', labelClass: 'foot-unit-name', inputs: [frontFootInput, backFootInput], current: 'mm' },
   riderMass: { radioName: 'rider-mass-units', labelClass: 'rider-mass-unit-name', inputs: [riderMassInput], current: 'kg' },
 };
 
@@ -169,24 +171,48 @@ function readInputs() {
   }
   const board = {
     position: document.querySelector('input[name="board-position"]:checked').value,
+    riderModel: document.querySelector('input[name="rider-model"]:checked').value,
+    riderHeight: Number(riderHeightInput.value),
+    crouch: Number(crouchInput.value) / 100,
+    lean: (Number(leanInput.value) * Math.PI) / 180,
     moves: [],
-    wheelbase: toBaseUnits(wheelbaseInput, 'wheelbase'),
-    deckLength: toBaseUnits(deckLengthInput, 'wheelbase'),
-    deckUndersideHeight: toBaseUnits(boardHeightInput, 'boardHeight'),
+    wheelbase: toBaseUnits(wheelbaseInput, 'board'),
+    deckLength: toBaseUnits(deckLengthInput, 'board'),
+    axleHeight: toBaseUnits(axleHeightInput, 'board'),
+    wheelRadius: toBaseUnits(wheelDiameterInput, 'board') / 2,
+    frontFootOffset: toBaseUnits(frontFootInput, 'feet'),
+    backFootOffset: toBaseUnits(backFootInput, 'feet'),
     speed: toBaseUnits(speedInput, 'speed'),
     riderMass: toBaseUnits(riderMassInput, 'riderMass'),
   };
   if (!(board.deckLength >= board.wheelbase)) {
     return { error: 'Skateboard deck length must be at least the wheelbase.' };
   }
-  if (!(board.wheelbase > 0) || !(board.deckUndersideHeight > 0)) {
-    return { error: 'Skateboard wheelbase and deck underside height must both be positive numbers.' };
+  if (!(board.wheelbase > 0) || !(board.axleHeight > 0) || !(board.wheelRadius > 0)) {
+    return { error: 'Skateboard wheelbase, axle height and wheel diameter must all be positive numbers.' };
   }
+  if (frontFootInput.value === '' || backFootInput.value === ''
+    || !Number.isFinite(board.frontFootOffset) || !Number.isFinite(board.backFootOffset)) {
+    return { error: 'The foot positions must be numbers.' };
+  }
+  const feet = footPositions({ board });
+  const overhang = (board.deckLength - board.wheelbase) / 2;
+  if (feet.backFoot < -overhang || feet.frontFoot > board.wheelbase + overhang) {
+    return { error: 'The feet must be on the deck, between its nose and tail.' };
+  }
+  if (feet.backFoot >= feet.frontFoot) return { error: 'The back foot must be behind the front foot.' };
+  // The deck's underside sits above the ground by the axle height plus the wheels' radius.
+  board.deckUndersideHeight = board.axleHeight + board.wheelRadius;
   if (board.position === 'animation' && (speedInput.value === '' || !(board.speed >= 0))) {
     return { error: 'Starting speed must be zero or more.' };
   }
   if (board.position === 'animation' && (riderMassInput.value === '' || !(board.riderMass >= 0))) {
     return { error: 'Rider weight must be zero or more.' };
+  }
+  if (board.position === 'animation' && board.riderModel === 'body') {
+    if (!(board.riderHeight >= 100 && board.riderHeight <= 220)) return { error: 'Rider height must be between 100 and 220 cm.' };
+    if (!(board.crouch >= 0 && board.crouch <= 1)) return { error: 'Crouch must be between 0 and 100%.' };
+    if (!(Math.abs(board.lean) <= Math.PI / 4)) return { error: 'Shoulder lean must be between -45 and 45°.' };
   }
   if (board.position === 'animation') {
     const moves = readMoves();
@@ -202,9 +228,8 @@ function readInputs() {
  */
 const MOVE_TRIGGERS = { up: 'Going up', stop: 'Board stops', down: 'Coming down' };
 const DEFAULT_MOVES = [
-  { when: 'up', at: '0', delay: '0', frontWeight: '50', twist: '', twistTime: '' },
-  { when: 'up', at: '102', delay: '0', frontWeight: '70', twist: '', twistTime: '' },
-  { when: 'stop', at: '', delay: '0.5', frontWeight: '15', twist: '60', twistTime: '0.05' },
+  { when: 'up', at: '102', delay: '0', frontWeight: '50', twist: '', twistTime: '' },
+  { when: 'stop', at: '', delay: '0.2', frontWeight: '30', twist: '60', twistTime: '0.1' },
   { when: 'down', at: '90', delay: '0', frontWeight: '50', twist: '', twistTime: '' },
 ];
 const copyMoves = (moves) => moves.map((move) => ({ ...move }));
@@ -313,6 +338,7 @@ function changeUnit(group, newUnit) {
 
 function update() {
   animationControls.hidden = document.querySelector('input[name="board-position"]:checked').value !== 'animation';
+  bodyControls.hidden = document.querySelector('input[name="rider-model"]:checked').value !== 'body';
   const inputs = readInputs();
   if (inputs.error) {
     errorOut.textContent = inputs.error;
@@ -401,7 +427,9 @@ function draw(geo) {
     bounds.maxY = Math.max(bounds.maxY, Math.min(geo.height + boardLength * 2, (speed * speed) / (2 * GRAVITY_CM_PER_S2) + boardLength));
     const range = offCanvasRange(geo, visibleBoardArea(bounds));
     const timeline = physicsMovesTimeline(geo, range);
-    if (timeline.note) showBoardNote(timeline.note);
+    const unusedTwists = geo.board.riderModel === 'body' && geo.board.moves.some((move) => move.twistTime > 0);
+    const notes = [timeline.note, unusedTwists ? "The body model doesn't use the moves' twists yet." : null].filter(Boolean);
+    if (notes.length) showBoardNote(notes.join(' '));
     startAnimation(geo, timeline, bounds);
     return;
   }
@@ -546,7 +574,7 @@ function showReadout(geo, pose) {
     rider.loads.back + rider.loads.front, rider.forces.back + rider.forces.front,
   );
   const cogAlong = dot(sub(rider.cog, pose.back), pose.u);
-  const unit = UNIT_GROUPS.wheelbase.current;
+  const unit = UNIT_GROUPS.board.current;
   readouts.cog.textContent = `${(cogAlong / UNITS[unit].basePerUnit).toFixed(1)} ${unit}`;
   readouts.speed.textContent = formatLength(rider.speed, 'speed');
   readouts.action.textContent = rider.action;
@@ -697,7 +725,8 @@ function boardViewBounds(geo, framePoses) {
   const { wheelbase, deckUndersideHeight } = geo.board;
   const { overhang, kickRise } = deckProfile(geo);
   const boardPoints = framePoses.flatMap((p) => {
-    const top = mul(p.v, deckUndersideHeight + BOARD_THICKNESS_CM + kickRise);
+    const riderHeight = geo.board.position === 'animation' && geo.board.riderModel === 'body' ? geo.board.riderHeight : 0;
+    const top = mul(p.v, deckUndersideHeight + BOARD_THICKNESS_CM + Math.max(kickRise, riderHeight));
     return [add(p.back, mul(p.u, -overhang)), add(p.back, mul(p.u, wheelbase + overhang))]
       .flatMap((end) => [end, add(end, top)]);
   });
@@ -753,7 +782,7 @@ let markedProgress = null;
  * past the coping into the air, so anything past 100% is marked at the coping.
  */
 function frontAxleAtProgress(geo, percent) {
-  const wheelRadius = geo.board.deckUndersideHeight * WHEEL_RADIUS_PER_DECK_UNDERSIDE_HEIGHT;
+  const wheelRadius = geo.board.wheelRadius;
   const touching = axleTouchingCoping(geo, wheelRadius).axle;
   if (percent <= 0) return { x: percent / percentPerCmOnFlat(geo, wheelRadius), y: wheelRadius };
   const angle = (percent / 100) * Math.atan2(touching.x, geo.radius - touching.y);
@@ -869,7 +898,6 @@ function drawCoping(geo, vp) {
 // Clearance between a truck's axle and the coping for the low and high positions, roughly half a baseplate.
 const TRUCK_CLEARANCE_CM = 3;
 // Illustrative board proportions
-const WHEEL_RADIUS_PER_DECK_UNDERSIDE_HEIGHT = 0.33;
 const BOARD_THICKNESS_CM = 1.2;
 // The nose and tail start to curve up this far past each axle, about the end of the truck's baseplate, and finish
 // at this angle.
@@ -1026,7 +1054,7 @@ function placeAtTop(geo, wheelRadius) {
  */
 function placeBoard(geo) {
   const { wheelbase, deckUndersideHeight, position } = geo.board;
-  const wheelRadius = deckUndersideHeight * WHEEL_RADIUS_PER_DECK_UNDERSIDE_HEIGHT;
+  const wheelRadius = geo.board.wheelRadius;
   if (position === 'top') return placeAtTop(geo, wheelRadius);
   const coping = copingCentre(geo);
   const copingRadius = geo.coping.diameter / 2;
@@ -1150,7 +1178,7 @@ function ridePose(geo, s) {
 /** Draws the board: wheels touching the surface, trucks, and the deck with its nose and tail. */
 function drawBoard(geo, pose, vp) {
   const { wheelbase, deckUndersideHeight } = geo.board;
-  const wheelRadius = deckUndersideHeight * WHEEL_RADIUS_PER_DECK_UNDERSIDE_HEIGHT;
+  const wheelRadius = geo.board.wheelRadius;
   const { overhang } = deckProfile(geo);
   const { u, v } = pose;
   const deckAt = (along, up) => toPx(vp, add(add(pose.back, mul(u, along)), mul(v, deckUndersideHeight + up)));
@@ -1229,7 +1257,51 @@ function drawRider(geo, pose, vp) {
   }
   ctx.restore();
   if (pose.rider.pivotAlong !== undefined) drawRiderBody(geo, pose, vp);
+  if (pose.rider.skeleton) drawSkeleton(geo, pose.rider.skeleton, vp);
   if (pose.rider.cog) drawCentreOfGravity(geo, pose.rider.cog, vp);
+}
+
+/**
+ * The body rider as simulated: lower legs, thighs and torso as lines between the joints, with a dot at each joint and
+ * the head above the shoulders.
+ */
+function drawSkeleton(geo, skeleton, vp) {
+  const p = (point) => toPx(vp, point);
+  const lines = [
+    [skeleton.backAnkle, skeleton.backKnee], [skeleton.backKnee, skeleton.hip],
+    [skeleton.frontAnkle, skeleton.frontKnee], [skeleton.frontKnee, skeleton.hip],
+    [skeleton.hip, skeleton.shoulder],
+  ];
+  const headRadius = Math.max(6, 0.055 * geo.board.riderHeight * vp.scale);
+  const torso = sub(skeleton.shoulder, skeleton.hip);
+  const head = add(skeleton.shoulder, mul(torso, (0.055 * geo.board.riderHeight + 2) / len(torso)));
+  ctx.save();
+  ctx.strokeStyle = COLOURS.rider;
+  ctx.fillStyle = COLOURS.rider;
+  ctx.lineWidth = Math.max(2, 2.5 * vp.scale);
+  ctx.lineCap = 'round';
+  for (const [a, b] of lines) {
+    const from = p(a);
+    const to = p(b);
+    ctx.beginPath();
+    ctx.moveTo(from.x, from.y);
+    ctx.lineTo(to.x, to.y);
+    ctx.stroke();
+  }
+  for (const joint of [skeleton.backKnee, skeleton.frontKnee, skeleton.hip, skeleton.shoulder]) {
+    const at = p(joint);
+    ctx.beginPath();
+    ctx.arc(at.x, at.y, 3.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  const headAt = p(head);
+  ctx.beginPath();
+  ctx.arc(headAt.x, headAt.y, headRadius, 0, Math.PI * 2);
+  ctx.globalAlpha = 0.25;
+  ctx.fill();
+  ctx.globalAlpha = 1;
+  ctx.stroke();
+  ctx.restore();
 }
 
 // Twists smaller than this, in N m, aren't shown.
@@ -1515,13 +1587,14 @@ function drawLabel(text, x, y, colour, align, withBackground = false) {
 }
 
 for (const input of [
+  frontFootInput, backFootInput,
   heightInput, radiusInput, copingInput, copingAboveDeckInput, copingFromRampInput, wheelbaseInput, deckLengthInput,
-  boardHeightInput,
-  speedInput, riderMassInput,
+  axleHeightInput, wheelDiameterInput,
+  speedInput, riderMassInput, riderHeightInput, crouchInput, leanInput,
 ]) {
   input.addEventListener('input', update);
 }
-document.querySelectorAll('input[name="board-position"]').forEach((radio) => {
+document.querySelectorAll('input[name="board-position"], input[name="rider-model"]').forEach((radio) => {
   radio.addEventListener('change', update);
 });
 window.addEventListener('resize', update);
@@ -1626,7 +1699,8 @@ function pageState(asFirstOpened = false) {
 }
 
 /** Sets everything on the page from a saved state, then redraws. Anything the state doesn't mention is left alone. */
-function applyPageState(state) {
+function applyPageState(savedState) {
+  const state = withBoardUnits(savedState);
   for (const control of pageControls()) {
     if (control.type === 'radio') {
       if (control.name in state.choices) control.checked = control.value === state.choices[control.name];
@@ -1649,8 +1723,10 @@ function applyPageState(state) {
  */
 function movesWithTwist() {
   const board = {
-    wheelbase: toBaseUnits(wheelbaseInput, 'wheelbase'),
-    deckLength: toBaseUnits(deckLengthInput, 'wheelbase'),
+    wheelbase: toBaseUnits(wheelbaseInput, 'board'),
+    deckLength: toBaseUnits(deckLengthInput, 'board'),
+    frontFootOffset: toBaseUnits(frontFootInput, 'feet'),
+    backFootOffset: toBaseUnits(backFootInput, 'feet'),
     riderMass: toBaseUnits(riderMassInput, 'riderMass'),
   };
   const { backFoot, frontFoot } = footPositions({ board });
@@ -1667,28 +1743,28 @@ function movesWithTwist() {
   };
 }
 
+/**
+ * Converts a state saved when the deck length and wheelbase had units of their own, and the deck underside height
+ * was set directly, to the one set of board units (mm): the underside height becomes an axle height, keeping the
+ * page's wheel diameter.
+ */
+function withBoardUnits(state) {
+  const { choices = {}, values = {} } = state;
+  if (!('wheelbase-units' in choices) && !('board-height-units' in choices)) return state;
+  const toMm = (value, unit) => (value === undefined ? undefined : String(Number((Number(value) * UNITS[unit].basePerUnit * 10).toFixed(1))));
+  const { 'wheelbase-units': lengthUnit = 'in', 'board-height-units': heightUnit = 'in', ...otherChoices } = choices;
+  const { 'board-height': underside, ...otherValues } = values;
+  const converted = { ...otherValues, wheelbase: toMm(values.wheelbase, lengthUnit), 'deck-length': toMm(values['deck-length'], lengthUnit) };
+  if (underside !== undefined) {
+    const wheelDiameterMm = Number(wheelDiameterInput.defaultValue);
+    converted['axle-height'] = String(Math.max(1, Number(toMm(underside, heightUnit)) - wheelDiameterMm / 2));
+  }
+  for (const key of Object.keys(converted)) if (converted[key] === undefined) delete converted[key];
+  return { ...state, values: converted, choices: { ...otherChoices, 'board-units': 'mm' } };
+}
+
 const BUILT_IN_PRESETS = {
   default: { name: 'Default', state: () => pageState(true) },
-  // Lifts the nose just over the coping with the back wheels kept on the ramp, rocks on the coping, then lifts just
-  // back over. Found by searching the simulation on the page's first-opened ramp, where it works at about 9.5 mph.
-  'rock-to-fakie': {
-    name: 'Rock to Fakie',
-    state: () => {
-      const firstOpened = pageState(true);
-      return {
-        values: { ...firstOpened.values, speed: '9.5' },
-        choices: { ...firstOpened.choices, 'board-position': 'animation', 'speed-units': 'mph' },
-        moves: [
-          { when: 'up', at: '0', delay: '0', frontWeight: '50', twist: '', twistTime: '' },
-          { when: 'up', at: '84', delay: '0', frontWeight: '30', twist: '', twistTime: '' },
-          { when: 'up', at: '90', delay: '0', frontWeight: '', twist: '100', twistTime: '0.08' },
-          { when: 'up', at: '106', delay: '0', frontWeight: '60', twist: '', twistTime: '' },
-          { when: 'stop', at: '', delay: '0.5', frontWeight: '20', twist: '40', twistTime: '0.05' },
-          { when: 'down', at: '90', delay: '0', frontWeight: '50', twist: '', twistTime: '' },
-        ],
-      };
-    },
-  },
 };
 
 // Saved presets: { [preset id]: { name, state } }. Ids of presets saved under a new name start "saved:". Storage can
