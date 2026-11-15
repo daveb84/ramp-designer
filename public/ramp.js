@@ -10,7 +10,6 @@ const deckLengthInput = document.getElementById('deck-length');
 const axleHeightInput = document.getElementById('axle-height');
 const wheelDiameterInput = document.getElementById('wheel-diameter');
 const speedInput = document.getElementById('speed');
-const animationControls = document.getElementById('animation-controls');
 const bodyControls = document.getElementById('body-controls');
 const riderHeightInput = document.getElementById('rider-height');
 const crouchInput = document.getElementById('crouch');
@@ -19,11 +18,6 @@ const riderMassInput = document.getElementById('rider-mass');
 const frontFootInput = document.getElementById('front-foot');
 const backFootInput = document.getElementById('back-foot');
 const playbackInput = document.getElementById('playback');
-const presetSelect = document.getElementById('page-preset');
-const presetStatus = document.getElementById('preset-status');
-const deletePresetButton = document.getElementById('delete-preset');
-const saveAsPanel = document.getElementById('save-as');
-const saveAsName = document.getElementById('save-as-name');
 const addButton = document.getElementById('add-move');
 const addAboveButton = document.getElementById('add-above');
 const addBelowButton = document.getElementById('add-below');
@@ -31,7 +25,8 @@ const movesBody = document.getElementById('moves-body');
 const rollSpeedOut = document.getElementById('roll-speed-out');
 const movesSpeedOut = document.getElementById('moves-speed-out');
 const boardNote = document.getElementById('board-note');
-const boardReadout = document.getElementById('board-readout');
+const rideNote = document.getElementById('ride-note');
+const rideReadout = document.getElementById('ride-readout');
 const readouts = {
   backFoot: document.getElementById('back-foot-out'),
   backForce: document.getElementById('back-foot-force'),
@@ -55,7 +50,9 @@ const canvas = document.getElementById('ramp-canvas');
 const detailCanvas = document.getElementById('detail-canvas');
 const boardCanvas = document.getElementById('board-canvas');
 const boardView = document.getElementById('board-view');
-const boardControls = document.getElementById('board-controls');
+const rideCanvas = document.getElementById('ride-canvas');
+const rideView = document.getElementById('ride-view');
+const rideControls = document.getElementById('ride-controls');
 const pauseButton = document.getElementById('pause-button');
 
 // The context of whichever canvas is being drawn; see useCanvas.
@@ -203,22 +200,20 @@ function readInputs() {
   if (feet.backFoot >= feet.frontFoot) return { error: 'The back foot must be behind the front foot.' };
   // The deck's underside sits above the ground by the axle height plus the wheels' radius.
   board.deckUndersideHeight = board.axleHeight + board.wheelRadius;
-  if (board.position === 'animation' && (speedInput.value === '' || !(board.speed >= 0))) {
+  if ((speedInput.value === '' || !(board.speed >= 0))) {
     return { error: 'Starting speed must be zero or more.' };
   }
-  if (board.position === 'animation' && (riderMassInput.value === '' || !(board.riderMass >= 0))) {
+  if ((riderMassInput.value === '' || !(board.riderMass >= 0))) {
     return { error: 'Rider weight must be zero or more.' };
   }
-  if (board.position === 'animation' && board.riderModel === 'body') {
+  if (board.riderModel === 'body') {
     if (!(board.riderHeight >= 100 && board.riderHeight <= 220)) return { error: 'Rider height must be between 100 and 220 cm.' };
     if (!(board.crouch >= 0 && board.crouch <= 1)) return { error: 'Crouch must be between 0 and 100%.' };
     if (!(Math.abs(board.lean) <= Math.PI / 4)) return { error: 'Shoulder lean must be between -45 and 45°.' };
   }
-  if (board.position === 'animation') {
-    const moves = readMoves();
-    if (moves.error) return { error: moves.error };
-    board.moves = moves;
-  }
+  const moves = readMoves();
+  if (moves.error) return { error: moves.error };
+  board.moves = moves;
   return { height, radius, coping, board };
 }
 
@@ -227,13 +222,8 @@ function readInputs() {
  * so a half-typed number isn't lost, and checked when read. They start as a rock to fakie.
  */
 const MOVE_TRIGGERS = { up: 'Going up', stop: 'Board stops', down: 'Coming down' };
-const DEFAULT_MOVES = [
-  { when: 'up', at: '102', delay: '0', frontWeight: '50', twist: '', twistTime: '' },
-  { when: 'stop', at: '', delay: '0.2', frontWeight: '30', twist: '60', twistTime: '0.1' },
-  { when: 'down', at: '90', delay: '0', frontWeight: '50', twist: '', twistTime: '' },
-];
 const copyMoves = (moves) => moves.map((move) => ({ ...move }));
-let riderMoves = copyMoves(DEFAULT_MOVES);
+let riderMoves = [];
 
 /** The moves as numbers, with blanks as null, or an error naming the first move that doesn't make sense. */
 function readMoves() {
@@ -337,7 +327,6 @@ function changeUnit(group, newUnit) {
 }
 
 function update() {
-  animationControls.hidden = document.querySelector('input[name="board-position"]:checked').value !== 'animation';
   bodyControls.hidden = document.querySelector('input[name="rider-model"]:checked').value !== 'body';
   const inputs = readInputs();
   if (inputs.error) {
@@ -352,7 +341,9 @@ function update() {
     movesSpeedOut.textContent = '–';
     vertStat.hidden = true;
     boardNote.hidden = true;
-    boardReadout.hidden = true;
+    rideNote.hidden = true;
+    rideReadout.hidden = true;
+    rideControls.hidden = true;
     stopAnimation();
     clearCanvases();
     return;
@@ -389,6 +380,7 @@ function clearCanvases() {
   useCanvas(canvas);
   useCanvas(detailCanvas);
   boardView.hidden = true;
+  rideView.hidden = true;
 }
 
 /** Maps world cm (y up) onto the canvas so that the given bounds fit inside the padding. */
@@ -412,46 +404,56 @@ function draw(geo) {
   stopAnimation();
   drawOverview(geo);
   drawCopingDetail(geo);
+  drawStillBoard(geo);
+  drawRide(geo);
+}
 
+/** The skateboard in its chosen still position. */
+function drawStillBoard(geo) {
   const { position } = geo.board;
   boardView.hidden = false;
   boardNote.hidden = true;
-  boardReadout.hidden = position !== 'animation';
-  boardControls.hidden = position !== 'animation';
-
-  if (position === 'animation') {
-    const bounds = boardViewBounds(geo, sampleRide(geo, rideRange(geo)));
-    // Leave room above for air: the most height the starting speed could buy, plus a board length.
-    const { wheelbase, speed } = geo.board;
-    const boardLength = geo.board.deckLength;
-    bounds.maxY = Math.max(bounds.maxY, Math.min(geo.height + boardLength * 2, (speed * speed) / (2 * GRAVITY_CM_PER_S2) + boardLength));
-    const range = offCanvasRange(geo, visibleBoardArea(bounds));
-    const timeline = physicsMovesTimeline(geo, range);
-    const unusedTwists = geo.board.riderModel === 'body' && geo.board.moves.some((move) => move.twistTime > 0);
-    const notes = [timeline.note, unusedTwists ? "The body model doesn't use the moves' twists yet." : null].filter(Boolean);
-    if (notes.length) showBoardNote(notes.join(' '));
-    startAnimation(geo, timeline, bounds);
-    return;
+  const placement = placeBoard(geo);
+  if (!placement) {
+    showNote(boardNote, position.startsWith('touch-')
+      ? "The deck doesn't touch the coping as the skateboard rolls up this ramp."
+      : `The skateboard can't sit in the ${POSITION_NAMES[position]} position on this ramp.`);
   }
+  drawBoardView(boardCanvas, geo, placement ?? ridePose(geo, rideRange(geo).from));
+}
 
-  const placement = position === 'animation' ? null : placeBoard(geo);
-  if (position !== 'animation' && !placement) {
-    showBoardNote(`The skateboard can't sit in the ${POSITION_NAMES[position]} position on this ramp.`);
-  }
-  drawBoardView(geo, placement ?? ridePose(geo, rideRange(geo).from));
+/** The ride: the rider rolling in, doing their moves, and rolling out. */
+function drawRide(geo) {
+  rideView.hidden = false;
+  rideNote.hidden = true;
+  rideReadout.hidden = false;
+  rideControls.hidden = false;
+  const bounds = boardViewBounds(geo, sampleRide(geo, rideRange(geo)), true);
+  // Leave room above for air: the most height the starting speed could buy, plus a board length.
+  const { speed } = geo.board;
+  const boardLength = geo.board.deckLength;
+  bounds.maxY = Math.max(bounds.maxY, Math.min(geo.height + boardLength * 2, (speed * speed) / (2 * GRAVITY_CM_PER_S2) + boardLength));
+  const range = offCanvasRange(geo, visibleBoardArea(rideCanvas, bounds));
+  const timeline = physicsMovesTimeline(geo, range);
+  const unusedTwists = geo.board.riderModel === 'body' && geo.board.moves.some((move) => move.twistTime > 0);
+  const notes = [timeline.note, unusedTwists ? "The body model doesn't use the moves' twists yet." : null].filter(Boolean);
+  if (notes.length) showNote(rideNote, notes.join(' '));
+  startAnimation(geo, timeline, bounds);
 }
 
 const POSITION_NAMES = {
   top: 'Top',
+  'touch-low': 'Touch coping low',
   'over-coping': 'Over coping',
   'middle-ramp': 'Middle - ramp',
   'middle-deck': 'Middle - deck',
+  'touch-high': 'Touch coping high',
   high: 'High',
 };
 
-function showBoardNote(text) {
-  boardNote.textContent = text;
-  boardNote.hidden = false;
+function showNote(note, text) {
+  note.textContent = text;
+  note.hidden = false;
 }
 
 const GRAVITY_CM_PER_S2 = 981;
@@ -525,7 +527,6 @@ function offCanvasRange(geo, visible) {
 
 let animation = null;
 
-/** Loops the timeline on the skateboard canvas with the view fitted to the given bounds. */
 /** Playback speed as a fraction of real life, from 1% to 100%; anything else entered plays in real time. */
 function playbackRate() {
   const percent = Number(playbackInput.value);
@@ -542,6 +543,7 @@ function setPaused(pause) {
   pauseButton.setAttribute('aria-pressed', String(pause));
 }
 
+/** Loops the timeline on the ride canvas with the view fitted to the given bounds. */
 function startAnimation(geo, timeline, bounds) {
   let last = performance.now();
   let elapsed = 0;
@@ -555,7 +557,7 @@ function startAnimation(geo, timeline, bounds) {
     const progress = elapsed / timeline.durationMs;
     const pose = timeline.poseAt(progress);
     if (pose) {
-      drawBoardView(geo, pose, bounds);
+      drawBoardView(rideCanvas, geo, pose, bounds);
       showReadout(geo, pose);
     }
     animation.frame = requestAnimationFrame(step);
@@ -563,7 +565,7 @@ function startAnimation(geo, timeline, bounds) {
   step(last);
 }
 
-/** The live figures under the skateboard canvas for the current moment of the animation. */
+/** The live figures under the ride canvas for the current moment of the animation. */
 function showReadout(geo, pose) {
   const { rider } = pose;
   // Real pushes into the deck, including the curve's, as a share of the rider's standing weight and in newtons.
@@ -717,15 +719,18 @@ function drawCopingDetail(geo) {
   ctx.restore();
 }
 
-/** The skateboard in its chosen position, close up around the top of the ramp. */
+/** The skateboard close up around the top of the ramp, still or riding. */
 const BOARD_VIEW_PADDING = 16;
 
-/** World bounds that fit the top of the ramp, the coping and the board at every one of the given poses. */
-function boardViewBounds(geo, framePoses) {
+/**
+ * World bounds that fit the top of the ramp, the coping and the board at every one of the given poses, and the
+ * rider's body above it when riding with the body model.
+ */
+function boardViewBounds(geo, framePoses, riding = false) {
   const { wheelbase, deckUndersideHeight } = geo.board;
   const { overhang, kickRise } = deckProfile(geo);
   const boardPoints = framePoses.flatMap((p) => {
-    const riderHeight = geo.board.position === 'animation' && geo.board.riderModel === 'body' ? geo.board.riderHeight : 0;
+    const riderHeight = riding && geo.board.riderModel === 'body' ? geo.board.riderHeight : 0;
     const top = mul(p.v, deckUndersideHeight + BOARD_THICKNESS_CM + Math.max(kickRise, riderHeight));
     return [add(p.back, mul(p.u, -overhang)), add(p.back, mul(p.u, wheelbase + overhang))]
       .flatMap((end) => [end, add(end, top)]);
@@ -742,9 +747,9 @@ function boardViewBounds(geo, framePoses) {
   };
 }
 
-/** The world area actually visible on the skateboard canvas once the bounds are fitted to its shape. */
-function visibleBoardArea(bounds) {
-  const rect = boardCanvas.getBoundingClientRect();
+/** The world area actually visible on a skateboard canvas once the bounds are fitted to its shape. */
+function visibleBoardArea(target, bounds) {
+  const rect = target.getBoundingClientRect();
   const vp = createViewport(rect, bounds, BOARD_VIEW_PADDING);
   const origin = vp.px(0, 0);
   return {
@@ -753,11 +758,11 @@ function visibleBoardArea(bounds) {
   };
 }
 
-/** Draws the board at the given pose, with the view fitted to the given bounds. */
-function drawBoardView(geo, pose, bounds = boardViewBounds(geo, [pose])) {
-  const view = useCanvas(boardCanvas);
+/** Draws the board at the given pose on a skateboard canvas, with the view fitted to the given bounds. */
+function drawBoardView(target, geo, pose, bounds = boardViewBounds(geo, [pose])) {
+  const view = useCanvas(target);
   const vp = createViewport(view, bounds, BOARD_VIEW_PADDING);
-  const visible = visibleBoardArea(bounds);
+  const visible = visibleBoardArea(target, bounds);
 
   ctx.strokeStyle = COLOURS.ground;
   ctx.lineWidth = 2;
@@ -770,10 +775,10 @@ function drawBoardView(geo, pose, bounds = boardViewBounds(geo, [pose])) {
   drawDeck(geo, vp, visible.maxX);
   drawCoping(geo, vp);
   drawBoard(geo, pose, vp);
-  if (markedProgress !== null) drawProgressMarker(geo, markedProgress, vp, view);
+  if (target === rideCanvas && markedProgress !== null) drawProgressMarker(geo, markedProgress, vp, view);
 }
 
-// The "Front wheels at" percentage being edited in the moves table, marked on the skateboard canvas, or null.
+// The "Front wheels at" percentage being edited in the moves table, marked on the ride canvas, or null.
 let markedProgress = null;
 
 /**
@@ -1046,6 +1051,69 @@ function placeAtTop(geo, wheelRadius) {
 }
 
 /**
+ * Places the board, rolling up with both sets of wheels down, at the lowest ('low') or highest ('high') point where the
+ * underside of the deck touches the coping. Null if it never does.
+ */
+function placeTouchingCoping(geo, wheelRadius, which) {
+  const { wheelbase, deckUndersideHeight } = geo.board;
+  const coping = copingCentre(geo);
+  const copingRadius = geo.coping.diameter / 2;
+  const across = deckUndersideHeight - wheelRadius - copingRadius;
+  const deckAxleHeight = geo.height + wheelRadius;
+  const frontTouching = axleTouchingCoping(geo, wheelRadius);
+  // Past this the back wheels would be rolling over the coping.
+  const sEnd = frontTouching.s;
+
+  // The front axle, a wheelbase ahead of the back axle: on the deck, or rolling over the coping. Null while the front
+  // wheels are still on the ramp, below the coping.
+  const frontAxleFrom = (backAxle) => {
+    if (len(sub(frontTouching.axle, backAxle)) >= wheelbase) return null;
+    const rise = deckAxleHeight - backAxle.y;
+    if (Math.abs(rise) <= wheelbase) {
+      const onDeck = { x: backAxle.x + Math.sqrt(wheelbase * wheelbase - rise * rise), y: deckAxleHeight };
+      if (wheelClear(geo, onDeck, wheelRadius)) return onDeck;
+    }
+    // Where a wheelbase from the back axle meets the front wheels' path around the coping, on the upper side.
+    const reach = wheelRadius + copingRadius;
+    const toCoping = sub(coping, backAxle);
+    const d = len(toCoping);
+    if (d > wheelbase + reach || d < Math.abs(wheelbase - reach)) return null;
+    const a = (wheelbase * wheelbase - reach * reach + d * d) / (2 * d);
+    const h = Math.sqrt(Math.max(0, wheelbase * wheelbase - a * a));
+    return add(add(backAxle, mul(toCoping, a / d)), mul({ x: -toCoping.y, y: toCoping.x }, h / d));
+  };
+
+  const poseAt = (s) => {
+    const backAxle = axleOnRamp(geo, s, wheelRadius);
+    const frontAxle = frontAxleFrom(backAxle);
+    if (!frontAxle) return null;
+    const u = mul(sub(frontAxle, backAxle), 1 / wheelbase);
+    const v = { x: -u.y, y: u.x };
+    return { backAxle, u, v };
+  };
+  // How far the deck's underside is above the coping, while the coping is between the axles; Infinity otherwise.
+  const gap = (s) => {
+    const pose = poseAt(s);
+    if (!pose) return Infinity;
+    const toCoping = sub(coping, pose.backAxle);
+    const along = dot(toCoping, pose.u);
+    if (along < 0 || along > wheelbase) return Infinity;
+    return across - dot(toCoping, pose.v);
+  };
+
+  const steps = 1000;
+  const sAt = (i) => (sEnd * i) / steps;
+  const touching = [];
+  for (let i = 0; i <= steps; i++) if (gap(sAt(i)) <= 0) touching.push(i);
+  if (!touching.length) return null;
+  const s = which === 'low'
+    ? (touching[0] === 0 ? 0 : bisect(gap, sAt(touching[0] - 1), sAt(touching[0])))
+    : (touching.at(-1) === steps ? sEnd : bisect(gap, sAt(touching.at(-1)), sAt(touching.at(-1) + 1)));
+  const pose = poseAt(s);
+  return { ...boardPose(sub(pose.backAxle, mul(pose.v, wheelRadius)), pose.u, wheelbase), s };
+}
+
+/**
  * Places the board in one of the still positions. It rests on one set of wheels (the back wheels on the ramp, or the
  * front wheels on the deck) and on the coping under the deck, at the position's distance along the board. If the
  * other wheels would then go into the ramp or the deck, they rest on it instead, with both sets of wheels down.
@@ -1056,6 +1124,8 @@ function placeBoard(geo) {
   const { wheelbase, deckUndersideHeight, position } = geo.board;
   const wheelRadius = geo.board.wheelRadius;
   if (position === 'top') return placeAtTop(geo, wheelRadius);
+  if (position === 'touch-low') return placeTouchingCoping(geo, wheelRadius, 'low');
+  if (position === 'touch-high') return placeTouchingCoping(geo, wheelRadius, 'high');
   const coping = copingCentre(geo);
   const copingRadius = geo.coping.diameter / 2;
   const { wheels, alongBoard } = positionSupport(geo, position);
@@ -1601,7 +1671,7 @@ window.addEventListener('resize', update);
 pauseButton.addEventListener('click', () => setPaused(!paused));
 
 // Editing the moves re-runs the ride. The table is only redrawn when rows come or go, so typing keeps its place.
-// While any control in a row has focus, mark that row's "Front wheels at" position on the skateboard canvas.
+// While any control in a row has focus, mark that row's "Front wheels at" position on the ride canvas.
 const markFrom = (control) => {
   const row = control.closest('tr');
   const move = row ? riderMoves[Number(row.dataset.index)] : null;
@@ -1673,207 +1743,11 @@ addAboveButton.addEventListener('click', () => addMoveAt(selectedMove ?? 0));
 addBelowButton.addEventListener('click', () => addMoveAt((selectedMove ?? riderMoves.length - 1) + 1));
 renderMoves();
 
-/*
- * Presets: everything set on the page (every input, every choice of units, the skateboard position and the rider's
- * moves), saved in this browser's local storage and loaded again. Values are kept in the units they were entered in,
- * along with those units, so loading one never converts anything.
- */
-
-/** The page's form controls, other than the moves table, which is kept separately. */
-function pageControls() {
-  return [...document.querySelectorAll('form input, form select')].filter((control) => !movesBody.contains(control));
-}
-
-/** Everything set on the page, or what it starts with when the page is first opened. */
-function pageState(asFirstOpened = false) {
-  const values = {};
-  const choices = {};
-  for (const control of pageControls()) {
-    if (control.type === 'radio') {
-      if (asFirstOpened ? control.defaultChecked : control.checked) choices[control.name] = control.value;
-    } else if (control.id) {
-      values[control.id] = asFirstOpened ? control.defaultValue : control.value;
-    }
-  }
-  return { values, choices, moves: copyMoves(asFirstOpened ? DEFAULT_MOVES : riderMoves) };
-}
-
-/** Sets everything on the page from a saved state, then redraws. Anything the state doesn't mention is left alone. */
-function applyPageState(savedState) {
-  const state = withBoardUnits(savedState);
-  for (const control of pageControls()) {
-    if (control.type === 'radio') {
-      if (control.name in state.choices) control.checked = control.value === state.choices[control.name];
-    } else if (control.id in state.values) {
-      control.value = state.values[control.id];
-    }
-  }
-  for (const [group, unitGroup] of Object.entries(UNIT_GROUPS)) {
-    if (unitGroup.radioName in state.choices) unitGroup.current = state.choices[unitGroup.radioName];
-    showUnitLabels(group);
-  }
-  riderMoves = (state.moves ?? []).map(movesWithTwist());
-  renderMoves();
-  update();
-}
-
-/**
- * Converts moves saved when kicks were set as a push from each foot (as a share of body weight) into the twist those
- * pushes made, taking the rider's weight to be in the middle of the stance. Reads the board and rider from the page.
- */
-function movesWithTwist() {
-  const board = {
-    wheelbase: toBaseUnits(wheelbaseInput, 'board'),
-    deckLength: toBaseUnits(deckLengthInput, 'board'),
-    frontFootOffset: toBaseUnits(frontFootInput, 'feet'),
-    backFootOffset: toBaseUnits(backFootInput, 'feet'),
-    riderMass: toBaseUnits(riderMassInput, 'riderMass'),
-  };
-  const { backFoot, frontFoot } = footPositions({ board });
-  const middle = (backFoot + frontFoot) / 2;
-  const weight = board.riderMass * 9.81;
-  return (move) => {
-    if (!('kickBack' in move)) return { ...move };
-    const { kickBack, kickFront, kickTime, ...rest } = move;
-    const extra = { back: (Number(kickBack) || 0) / 100 - 0.5, front: (Number(kickFront) || 0) / 100 - 0.5 };
-    // Pushing into the deck ahead of the middle turns the nose down.
-    const twist = -(extra.front * weight * toM(frontFoot - middle) + extra.back * weight * toM(backFoot - middle));
-    const timed = Number(kickTime) > 0;
-    return { ...rest, twist: timed ? String(Math.round(twist)) : '', twistTime: timed ? kickTime : '' };
-  };
-}
-
-/**
- * Converts a state saved when the deck length and wheelbase had units of their own, and the deck underside height
- * was set directly, to the one set of board units (mm): the underside height becomes an axle height, keeping the
- * page's wheel diameter.
- */
-function withBoardUnits(state) {
-  const { choices = {}, values = {} } = state;
-  if (!('wheelbase-units' in choices) && !('board-height-units' in choices)) return state;
-  const toMm = (value, unit) => (value === undefined ? undefined : String(Number((Number(value) * UNITS[unit].basePerUnit * 10).toFixed(1))));
-  const { 'wheelbase-units': lengthUnit = 'in', 'board-height-units': heightUnit = 'in', ...otherChoices } = choices;
-  const { 'board-height': underside, ...otherValues } = values;
-  const converted = { ...otherValues, wheelbase: toMm(values.wheelbase, lengthUnit), 'deck-length': toMm(values['deck-length'], lengthUnit) };
-  if (underside !== undefined) {
-    const wheelDiameterMm = Number(wheelDiameterInput.defaultValue);
-    converted['axle-height'] = String(Math.max(1, Number(toMm(underside, heightUnit)) - wheelDiameterMm / 2));
-  }
-  for (const key of Object.keys(converted)) if (converted[key] === undefined) delete converted[key];
-  return { ...state, values: converted, choices: { ...otherChoices, 'board-units': 'mm' } };
-}
-
-const BUILT_IN_PRESETS = {
-  default: { name: 'Default', state: () => pageState(true) },
-};
-
-// Saved presets: { [preset id]: { name, state } }. Ids of presets saved under a new name start "saved:". Storage can
-// be unavailable (a private window, say), when nothing is kept between visits.
-const SAVED_PRESETS_KEY = 'ramp-designer.presets';
-function loadSavedPresets() {
-  try {
-    return JSON.parse(localStorage.getItem(SAVED_PRESETS_KEY)) ?? {};
-  } catch {
-    return {};
-  }
-}
-function storeSavedPresets(saved) {
-  try {
-    localStorage.setItem(SAVED_PRESETS_KEY, JSON.stringify(saved));
-    return true;
-  } catch {
-    return false;
-  }
-}
-let savedPresets = loadSavedPresets();
-
-/** A preset's state: the saved version if there is one, otherwise the built-in one. */
-const presetState = (preset) => savedPresets[preset]?.state ?? BUILT_IN_PRESETS[preset]?.state();
-const presetName = (preset) => savedPresets[preset]?.name ?? BUILT_IN_PRESETS[preset]?.name ?? preset;
-
-/** Fills the preset dropdown: the built-in presets, then any saved under a name of their own. */
-function showPresetOptions(selected) {
-  const saved = Object.keys(savedPresets).filter((id) => !(id in BUILT_IN_PRESETS))
-    .sort((a, b) => presetName(a).localeCompare(presetName(b)));
-  presetSelect.replaceChildren(...[...Object.keys(BUILT_IN_PRESETS), ...saved]
-    .map((id) => new Option(presetName(id), id, false, id === selected)));
-  presetSelect.value = selected;
-  // Only a preset you've saved can be deleted.
-  deletePresetButton.disabled = !(selected in savedPresets);
-}
-
-presetSelect.addEventListener('change', () => {
-  deletePresetButton.disabled = !(presetSelect.value in savedPresets);
-  applyPageState(presetState(presetSelect.value));
-});
-
-/** Shows a message by the presets for a few seconds. */
-function showPresetStatus(message) {
-  presetStatus.textContent = message;
-  clearTimeout(showPresetStatus.timer);
-  showPresetStatus.timer = setTimeout(() => { presetStatus.textContent = ''; }, 3000);
-}
-
-/** Saves everything on the page under a preset, and says so. */
-function savePreset(preset, name) {
-  savedPresets = { ...savedPresets, [preset]: { name, state: pageState() } };
-  const stored = storeSavedPresets(savedPresets);
-  showPresetOptions(preset);
-  showPresetStatus(stored ? `Saved as "${name}"` : "Couldn't save: this browser isn't keeping data for the page");
-}
-
-/**
- * Deletes the saved version of the selected preset, once confirmed. A built-in preset goes back to its own values; one
- * saved under a name of its own goes, and the page switches to Default.
- */
-deletePresetButton.addEventListener('click', () => {
-  const preset = presetSelect.value;
-  const name = presetName(preset);
-  const builtIn = preset in BUILT_IN_PRESETS;
-  const question = builtIn ? `Delete your saved "${name}" and go back to the built-in one?` : `Delete the preset "${name}"?`;
-  if (!(preset in savedPresets) || !window.confirm(question)) return;
-  const { [preset]: deleted, ...rest } = savedPresets;
-  savedPresets = rest;
-  storeSavedPresets(savedPresets);
-  const showing = builtIn ? preset : 'default';
-  showPresetOptions(showing);
-  applyPageState(presetState(showing));
-  showPresetStatus(builtIn ? `Deleted your saved "${name}"` : `Deleted "${name}"`);
-});
-document.getElementById('save-preset').addEventListener('click', () => savePreset(presetSelect.value, presetName(presetSelect.value)));
-
-// Save as: a name box, saving under a built-in preset's id when the name matches one, otherwise as a new preset.
-const closeSaveAs = () => {
-  saveAsPanel.hidden = true;
-  saveAsName.value = '';
-};
-const confirmSaveAs = () => {
-  const name = saveAsName.value.trim();
-  if (!name) {
-    saveAsName.focus();
-    return;
-  }
-  const builtIn = Object.keys(BUILT_IN_PRESETS).find((id) => BUILT_IN_PRESETS[id].name.toLowerCase() === name.toLowerCase());
-  savePreset(builtIn ?? `saved:${name}`, builtIn ? BUILT_IN_PRESETS[builtIn].name : name);
-  closeSaveAs();
-};
-document.getElementById('save-preset-as').addEventListener('click', () => {
-  saveAsPanel.hidden = false;
-  saveAsName.focus();
-});
-document.getElementById('save-as-confirm').addEventListener('click', confirmSaveAs);
-document.getElementById('save-as-cancel').addEventListener('click', closeSaveAs);
-saveAsName.addEventListener('keydown', (event) => {
-  if (event.key === 'Enter') confirmSaveAs();
-  if (event.key === 'Escape') closeSaveAs();
-});
-
 for (const [group, { radioName }] of Object.entries(UNIT_GROUPS)) {
   document.querySelectorAll(`input[name="${radioName}"]`).forEach((radio) => {
     radio.addEventListener('change', () => changeUnit(group, radio.value));
   });
 }
-// Open on the Default preset (your saved version, if you've saved one), once every script has loaded, as the
-// animations use physics.js.
-showPresetOptions('default');
-document.addEventListener('DOMContentLoaded', () => applyPageState(presetState('default')));
+// Open on the first preset (your saved version, if you've saved one), once every script has loaded, as the presets
+// are in presets.js and the animations use physics.js.
+document.addEventListener('DOMContentLoaded', () => loadPreset(firstPreset()));

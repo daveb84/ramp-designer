@@ -137,15 +137,32 @@
       <div class="form-row">
         <fieldset class="units">
           <legend>Skateboard position</legend>
-          <label class="radio"><input type="radio" name="board-position" value="top"> Top</label>
+          <label class="radio"><input type="radio" name="board-position" value="top" checked> Top</label>
+          <label class="radio"><input type="radio" name="board-position" value="touch-low"> Touch coping low</label>
           <label class="radio"><input type="radio" name="board-position" value="over-coping"> Over coping</label>
           <label class="radio"><input type="radio" name="board-position" value="middle-ramp"> Middle - ramp</label>
           <label class="radio"><input type="radio" name="board-position" value="middle-deck"> Middle - deck</label>
+          <label class="radio"><input type="radio" name="board-position" value="touch-high"> Touch coping high</label>
           <label class="radio"><input type="radio" name="board-position" value="high"> High</label>
-          <label class="radio"><input type="radio" name="board-position" value="animation" checked> Animation</label>
         </fieldset>
       </div>
-      <div class="form-rows" id="animation-controls" hidden>
+    </form>
+
+    <section class="results">
+      <div class="stat">
+        <span class="stat-label">Skateboard deck hits coping</span>
+        <span class="stat-value" id="hits-out">–</span>
+      </div>
+    </section>
+
+    <p class="note" id="board-note" hidden></p>
+
+    <div class="canvas-wrap" id="board-view">
+      <canvas id="board-canvas" class="detail"></canvas>
+    </div>
+
+    <h2>Ride</h2>
+    <form autocomplete="off">
       <div class="form-row">
         <fieldset class="units">
           <legend>Rider model</legend>
@@ -263,14 +280,9 @@
           <strong>Twist time</strong>: how long the twist lasts. Leave it blank for no twist.
         </p>
       </div>
-      </div>
     </form>
 
     <section class="results">
-      <div class="stat">
-        <span class="stat-label">Skateboard deck hits coping</span>
-        <span class="stat-value" id="hits-out">–</span>
-      </div>
       <div class="stat">
         <span class="stat-label">Speed needed to roll onto deck</span>
         <span class="stat-value" id="roll-speed-out">–</span>
@@ -282,16 +294,16 @@
       </div>
     </section>
 
-    <p class="note" id="board-note" hidden></p>
+    <p class="note" id="ride-note" hidden></p>
 
-    <div class="board-controls" id="board-controls" hidden>
+    <div class="board-controls" id="ride-controls">
       <button type="button" id="pause-button" aria-pressed="false">Pause</button>
     </div>
-    <div class="canvas-wrap" id="board-view">
-      <canvas id="board-canvas" class="detail"></canvas>
+    <div class="canvas-wrap" id="ride-view">
+      <canvas id="ride-canvas" class="detail"></canvas>
     </div>
 
-    <section class="results readout" id="board-readout" hidden>
+    <section class="results readout" id="ride-readout" hidden>
       <div class="stat">
         <span class="stat-label">Back foot</span>
         <span class="stat-value" id="back-foot-out">–</span>
@@ -332,5 +344,6 @@
   <script src="ramp.js"></script>
   <script src="physics.js"></script>
   <script src="rider-body.js"></script>
+  <script src="presets.js"></script>
 </body>
 </html>
